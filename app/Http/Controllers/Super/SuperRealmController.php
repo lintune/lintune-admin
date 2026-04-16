@@ -46,7 +46,7 @@ class SuperRealmController extends Controller
         $realm   = $request->realm;
         $base    = $this->baseUrl();
         $token   = $this->token();
-        $appUrl  = rtrim(config('app.url'), '/');
+        $appUrl  = rtrim(config('keycloak.frontend_url'), '/');
 
         // 1. Create realm
         $realmRes = \Http::withToken($token)->post("{$base}/admin/realms", [
@@ -127,5 +127,36 @@ class SuperRealmController extends Controller
         );
 
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' created successfully.");
+    }
+
+    public function toggle(string $realm)
+    {
+        $base  = $this->baseUrl();
+        $token = $this->token();
+
+        $current = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}")->json();
+        $enabled = !($current['enabled'] ?? false);
+
+        $res = \Http::withToken($token)->put("{$base}/admin/realms/{$realm}", ['enabled' => $enabled]);
+
+        if ($res->failed()) {
+            return back()->withErrors(['realm' => 'Failed to update realm status.']);
+        }
+
+        $status = $enabled ? 'enabled' : 'disabled';
+        return redirect()->route('super.realms')->with('success', "Realm '{$realm}' {$status}.");
+    }
+
+    public function destroy(string $realm)
+    {
+        $res = \Http::withToken($this->token())->delete("{$this->baseUrl()}/admin/realms/{$realm}");
+
+        if ($res->failed()) {
+            return back()->withErrors(['realm' => 'Failed to delete realm.']);
+        }
+
+        DomainRealmMap::where('realm', $realm)->delete();
+
+        return redirect()->route('super.realms')->with('success', "Realm '{$realm}' deleted.");
     }
 }

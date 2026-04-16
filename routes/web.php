@@ -16,5 +16,7 @@ Route::prefix('super')->name('super.')->group(function () {
         Route::get('/realms', [SuperRealmController::class, 'index'])->name('realms');
         Route::get('/realms/create', [SuperRealmController::class, 'create'])->name('realms.create');
         Route::post('/realms', [SuperRealmController::class, 'store'])->name('realms.store');
+        Route::post('/realms/{realm}/toggle', [SuperRealmController::class, 'toggle'])->name('realms.toggle');
+        Route::delete('/realms/{realm}', [SuperRealmController::class, 'destroy'])->name('realms.destroy');
     });
 });
