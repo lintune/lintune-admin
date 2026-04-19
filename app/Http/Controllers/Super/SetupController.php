@@ -20,10 +20,10 @@ class SetupController extends Controller
             'password' => 'required',
         ]);
 
-        $base = config('keycloak.base_url');
+        $base   = config('keycloak.base_url');
         $appUrl = rtrim(config('app.url'), '/');
 
-        // 1. Get token via password grant (one-time bootstrap)
+        // 1. Verify credentials via admin-cli password grant
         $tokenRes = \Http::asForm()->post("{$base}/realms/master/protocol/openid-connect/token", [
             'grant_type' => 'password',
             'client_id'  => 'admin-cli',
@@ -37,19 +37,19 @@ class SetupController extends Controller
 
         $token = $tokenRes->json()['access_token'];
 
-        // 2. Create lintune-admin client in master realm
+        // 2. Create lintune-admin OIDC client in master realm (for user login only)
         $clientRes = \Http::withToken($token)->post("{$base}/admin/realms/master/clients", [
-            'clientId'                     => 'lintune-admin',
-            'name'                         => 'Lintune Admin',
-            'description'                  => 'Automatically created by Lintune Admin setup. Used for super admin authentication and Keycloak Admin API access.',
-            'enabled'                      => true,
-            'publicClient'                 => false,
-            'standardFlowEnabled'          => true,
-            'directAccessGrantsEnabled'    => false,
-            'serviceAccountsEnabled'       => true,
-            'redirectUris'                 => ["{$appUrl}/super/auth/callback"],
-            'webOrigins'                   => [$appUrl],
-            'attributes'                   => [
+            'clientId'                  => 'lintune-admin',
+            'name'                      => 'Lintune Admin',
+            'description'               => 'Automatically created by Lintune Admin setup. Used for super admin authentication.',
+            'enabled'                   => true,
+            'publicClient'              => false,
+            'standardFlowEnabled'       => true,
+            'directAccessGrantsEnabled' => false,
+            'serviceAccountsEnabled'    => false,
+            'redirectUris'              => ["{$appUrl}/super/auth/callback"],
+            'webOrigins'                => [$appUrl],
+            'attributes'                => [
                 'post.logout.redirect.uris' => "{$appUrl}/super/login",
             ],
         ]);
@@ -67,60 +67,9 @@ class SetupController extends Controller
         }
         $clientSecret = $secretRes->json()['value'];
 
-        // 4. Assign admin role to the service account so client credentials can use Admin API
-        $serviceAccountRes = \Http::withToken($token)->get("{$base}/admin/realms/master/clients/{$clientUuid}/service-account-user");
-        if ($serviceAccountRes->failed()) {
-            return back()->withErrors(['auth' => 'Failed to fetch service account user.']);
-        }
-
-        $serviceAccountId = $serviceAccountRes->json()['id'];
-
-        $adminRoleRes = \Http::withToken($token)->get("{$base}/admin/realms/master/roles/admin");
-        if ($adminRoleRes->failed()) {
-            return back()->withErrors(['auth' => 'Failed to fetch admin role.']);
-        }
-
-        $role = $adminRoleRes->json();
-        $rolePayload = json_encode([[
-            'id'          => $role['id'],
-            'name'        => $role['name'],
-            'composite'   => $role['composite'],
-            'clientRole'  => $role['clientRole'],
-            'containerId' => $role['containerId'],
-        ]]);
-
-        $roleAssignRes = \Http::withToken($token)
-            ->withBody($rolePayload, 'application/json')
-            ->post("{$base}/admin/realms/master/users/{$serviceAccountId}/role-mappings/realm");
-
-        if ($roleAssignRes->failed()) {
-            return back()->withErrors(['auth' => 'Failed to assign admin role: ' . $roleAssignRes->body()]);
-        }
-
-        // 4b. Also assign all master-realm client roles (required for cross-realm Admin REST API access)
-        $masterRealmClients = \Http::withToken($token)->get("{$base}/admin/realms/master/clients", ['clientId' => 'master-realm'])->json();
-        $masterRealmClient  = collect($masterRealmClients)->firstWhere('clientId', 'master-realm');
-
-        if ($masterRealmClient) {
-            $masterRealmClientId = $masterRealmClient['id'];
-            $masterRealmRoles    = \Http::withToken($token)->get("{$base}/admin/realms/master/clients/{$masterRealmClientId}/roles")->json();
-
-            $rolePayloadMaster = json_encode(array_map(fn($r) => [
-                'id'          => $r['id'],
-                'name'        => $r['name'],
-                'composite'   => $r['composite'],
-                'clientRole'  => $r['clientRole'],
-                'containerId' => $r['containerId'],
-            ], $masterRealmRoles));
-
-            \Http::withToken($token)
-                ->withBody($rolePayloadMaster, 'application/json')
-                ->post("{$base}/admin/realms/master/users/{$serviceAccountId}/role-mappings/clients/{$masterRealmClientId}");
-        }
-
-        // 5. Create broker realm with random name
+        // 4. Create broker realm with random name
         $brokerRealm = 'broker-' . Str::lower(Str::random(8));
-        $brokerRes = \Http::withToken($token)->post("{$base}/admin/realms", [
+        $brokerRes   = \Http::withToken($token)->post("{$base}/admin/realms", [
             'realm'   => $brokerRealm,
             'enabled' => true,
         ]);
@@ -129,14 +78,16 @@ class SetupController extends Controller
             return back()->withErrors(['auth' => 'Failed to create broker realm: ' . $brokerRes->body()]);
         }
 
-        // 6. Write to .env and lock setup
+        // 5. Write to .env — store admin credentials for Admin API calls, lock setup
         $this->writeEnv([
             'KEYCLOAK_ADMIN_CLIENT_SECRET' => $clientSecret,
             'KEYCLOAK_BROKER_REALM'        => $brokerRealm,
+            'KEYCLOAK_ADMIN_USER'          => $request->username,
+            'KEYCLOAK_ADMIN_PASSWORD'      => base64_encode(encrypt($request->password)),
             'SETUP_COMPLETE'               => 'true',
         ]);
 
-        // 7. Clear config cache so new values are picked up
+        // 6. Clear config cache so new values are picked up
         \Artisan::call('config:clear');
 
         return redirect()->route('super.login');
@@ -144,7 +95,7 @@ class SetupController extends Controller
 
     private function writeEnv(array $values): void
     {
-        $path = base_path('.env');
+        $path    = base_path('.env');
         $content = file_get_contents($path);
 
         foreach ($values as $key => $value) {

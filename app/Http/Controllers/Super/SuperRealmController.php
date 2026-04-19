@@ -18,13 +18,14 @@ class SuperRealmController extends Controller
     {
         $base = $this->baseUrl();
         $res  = \Http::asForm()->post("{$base}/realms/master/protocol/openid-connect/token", [
-            'grant_type'    => 'client_credentials',
-            'client_id'     => 'lintune-admin',
-            'client_secret' => config('keycloak.admin_client_secret'),
+            'grant_type' => 'password',
+            'client_id'  => 'admin-cli',
+            'username'   => config('keycloak.admin_user'),
+            'password'   => decrypt(base64_decode(config('keycloak.admin_password'))),
         ]);
 
         if ($res->failed() || empty($res->json()['access_token'])) {
-            abort(500, 'Could not obtain admin token from Keycloak. Check that the lintune-admin service account has the admin role assigned in the master realm.');
+            abort(500, 'Could not obtain admin token from Keycloak. Check KEYCLOAK_ADMIN_USER and KEYCLOAK_ADMIN_PASSWORD in .env.');
         }
 
         return $res->json()['access_token'];
