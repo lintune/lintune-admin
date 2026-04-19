@@ -60,7 +60,13 @@ class SetupController extends Controller
         $isRepair = $request->boolean('repair');
 
         if (!$isRepair) {
-            // 2. Create lintune-admin OIDC client in master realm (fresh setup only)
+            // 2. Delete existing lintune-admin client if present, then recreate
+            $existingClients = \Http::withToken($token)->get("{$base}/admin/realms/master/clients", ['clientId' => 'lintune-admin'])->json();
+            $existingClient  = collect($existingClients)->firstWhere('clientId', 'lintune-admin');
+            if ($existingClient) {
+                \Http::withToken($token)->delete("{$base}/admin/realms/master/clients/{$existingClient['id']}");
+            }
+
             $clientRes = \Http::withToken($token)->post("{$base}/admin/realms/master/clients", [
                 'clientId'                  => 'lintune-admin',
                 'name'                      => 'Lintune Admin',
