@@ -86,12 +86,13 @@
     const checkUrl = '{{ route('super.session.check') }}';
     const loginUrl = '{{ route('super.login') }}';
 
+    let refreshing = false;
     function updateDisplay() {
         const remaining = expiresAt - Math.floor(Date.now() / 1000);
         if (remaining <= 0) {
             timerEl.textContent = '00:00';
             timerEl.classList.add('text-danger');
-            window.location.href = loginUrl;
+            if (!refreshing) { refreshing = true; refresh(); }
             return;
         }
         const m = String(Math.floor(remaining / 60)).padStart(2, '0');
@@ -107,6 +108,7 @@
             const data = await res.json();
             if (!data.valid) { window.location.href = loginUrl; return; }
             expiresAt = data.expires_at;
+            refreshing = false;
         } catch (e) {
             window.location.href = loginUrl;
         }
