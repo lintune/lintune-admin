@@ -69,17 +69,24 @@ class SetupController extends Controller
 
         // 4. Assign admin role to the service account so client credentials can use Admin API
         $serviceAccountRes = \Http::withToken($token)->get("{$base}/admin/realms/master/clients/{$clientUuid}/service-account-user");
-        if ($serviceAccountRes->successful()) {
-            $serviceAccountId = $serviceAccountRes->json()['id'];
+        if ($serviceAccountRes->failed()) {
+            return back()->withErrors(['auth' => 'Failed to fetch service account user.']);
+        }
 
-            // Get the admin role from master realm
-            $adminRoleRes = \Http::withToken($token)->get("{$base}/admin/realms/master/roles/admin");
-            if ($adminRoleRes->successful()) {
-                \Http::withToken($token)->post(
-                    "{$base}/admin/realms/master/users/{$serviceAccountId}/role-mappings/realm",
-                    [$adminRoleRes->json()]
-                );
-            }
+        $serviceAccountId = $serviceAccountRes->json()['id'];
+
+        $adminRoleRes = \Http::withToken($token)->get("{$base}/admin/realms/master/roles/admin");
+        if ($adminRoleRes->failed()) {
+            return back()->withErrors(['auth' => 'Failed to fetch admin role.']);
+        }
+
+        $roleAssignRes = \Http::withToken($token)->post(
+            "{$base}/admin/realms/master/users/{$serviceAccountId}/role-mappings/realm",
+            [$adminRoleRes->json()]
+        );
+
+        if ($roleAssignRes->failed()) {
+            return back()->withErrors(['auth' => 'Failed to assign admin role to service account: ' . $roleAssignRes->body()]);
         }
 
         // 5. Create broker realm with random name
