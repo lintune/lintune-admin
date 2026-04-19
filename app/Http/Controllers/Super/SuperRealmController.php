@@ -235,7 +235,7 @@ class SuperRealmController extends Controller
         return redirect()->route('super.realms')->with('success', "Mailcow domain '{$realm}' created.");
     }
 
-    public function destroy(string $realm)
+    public function destroy(Request $request, string $realm)
     {
         $res = \Http::withToken($this->token())->delete("{$this->baseUrl()}/admin/realms/{$realm}");
 
@@ -244,6 +244,12 @@ class SuperRealmController extends Controller
         }
 
         DomainRealmMap::where('realm', $realm)->delete();
+
+        if ($request->boolean('delete_mailcow') && config('mailcow.url') && config('mailcow.api_key')) {
+            $apiBase = rtrim(config('mailcow.url'), '/') . '/api/v1';
+            \Http::withHeaders(['X-API-Key' => config('mailcow.api_key'), 'Accept' => 'application/json'])
+                ->post("{$apiBase}/delete/domain", [$realm]);
+        }
 
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' deleted.");
     }

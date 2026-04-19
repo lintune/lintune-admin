@@ -78,6 +78,7 @@
               <button type="button" class="btn btn-sm btn-danger"
                 data-action="delete"
                 data-realm="{{ $realm['realm'] }}"
+                data-mailcow-enabled="{{ $mailcowEnabled ? '1' : '0' }}"
                 data-bs-toggle="modal" data-bs-target="#confirmModal">
                 <i class="bi bi-trash me-1"></i>Delete
               </button>
@@ -127,13 +128,23 @@ document.getElementById('confirmModal').addEventListener('show.bs.modal', functi
     const confirm = document.getElementById('confirmBtn');
 
     if (action === 'delete') {
+        const mailcowEnabled = btn.dataset.mailcowEnabled === '1';
         form.action   = `/super/realms/${realm}`;
         method.value  = 'DELETE';
         title.textContent = `Delete realm "${realm}"`;
-        body.innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-triangle-fill me-2"></i>
-            This will permanently delete the realm and all its users and data in Keycloak. This cannot be undone.</div>`;
+        body.innerHTML = `
+            <div class="alert alert-danger"><i class="bi bi-exclamation-triangle-fill me-2"></i>
+                This will permanently delete the realm and all its users and data in Keycloak. This cannot be undone.</div>
+            ${mailcowEnabled ? `
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="deleteMailcowCheck" name="delete_mailcow" value="1" />
+                <label class="form-check-label" for="deleteMailcowCheck">
+                    Also delete the Mailcow domain and all its mailboxes
+                </label>
+            </div>` : ''}`;
         confirm.className = 'btn btn-danger';
         confirm.textContent = 'Yes, delete';
+        document.getElementById('linkOnlyField')?.remove();
     } else if (action === 'toggle-mailcow') {
         const mailcowEnabled = btn.dataset.mailcowEnabled === '1';
         form.action  = `/super/realms/${realm}/toggle-mailcow`;
