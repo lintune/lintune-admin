@@ -9,7 +9,7 @@ Lintune Admin is the super admin portal for the Lintune platform — an open-sou
 | [Keycloak](https://www.keycloak.org/) | Identity provider — realms, users, SSO |
 | [Mailcow](https://mailcow.email/) | Email server — domains, mailboxes |
 | Nextcloud *(planned)* | File storage & collaboration |
-| PowerDNS *(planned)* | DNS management — zones, records |
+| PowerDNS / Cloudflare *(planned)* | DNS management — zones, records |
 | SSSD / Keycloak LDAP *(planned)* | Workstation login — Linux & Windows |
 
 This repo is the **super admin layer**. It is not customer-facing. Only platform operators use it.
@@ -92,7 +92,7 @@ The platform is being built incrementally. Contributions and ideas are welcome.
 - [ ] Nextcloud integration — provision a Nextcloud user space per tenant on realm creation
 
 ### Planned
-- [ ] **PowerDNS integration** — auto-create DNS zones per tenant domain and seed MX, SPF, DKIM and DMARC records on realm creation
+- [ ] **DNS integration** — auto-create DNS zones per tenant domain and seed MX, SPF, DKIM and DMARC records on realm creation. Supports **PowerDNS** (self-hosted) and **Cloudflare** (managed DNS)
 - [ ] **Workstation login** — expose a read-only, realm-scoped Keycloak LDAP endpoint per tenant so workstations (Linux via SSSD, Windows via Kerberos) can authenticate against the same user directory without Active Directory
 - [ ] **Headscale integration** — per-tenant managed VPN mesh so MSPs can offer secure remote access to workstations without opening firewall ports
 - [ ] **Tenant billing / usage overview** — per-realm user count, mailbox count, storage usage in one view for MSP billing purposes
