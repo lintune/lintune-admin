@@ -1,19 +1,29 @@
 <?php
 
 use App\Http\Controllers\Super\AuditLogController;
+use App\Http\Controllers\Super\SetupController;
 use App\Http\Controllers\Super\SuperAuthController;
 use App\Http\Controllers\Super\SuperRealmController;
 use App\Http\Middleware\RequireSuperAuth;
+use App\Http\Middleware\SetupComplete;
 use Illuminate\Support\Facades\Route;
 
 // amazonq-ignore-next-line
 Route::get('/', fn() => redirect()->route('super.login'));
 
-Route::prefix('super')->name('super.')->group(function () {
+Route::prefix('super')->name('super.')->middleware(SetupComplete::class)->group(function () {
+
+    // Setup (only accessible before SETUP_COMPLETE=true)
+    // amazonq-ignore-next-line
+    Route::get('/setup', [SetupController::class, 'show'])->name('setup');
+    // amazonq-ignore-next-line
+    Route::post('/setup', [SetupController::class, 'run'])->name('setup.run');
+
+    // Auth
     // amazonq-ignore-next-line
     Route::get('/login', [SuperAuthController::class, 'showLogin'])->name('login');
     // amazonq-ignore-next-line
-    Route::post('/login', [SuperAuthController::class, 'login'])->name('login.submit');
+    Route::get('/auth/callback', [SuperAuthController::class, 'callback'])->name('auth.callback');
     // amazonq-ignore-next-line
     Route::post('/logout', [SuperAuthController::class, 'logout'])->name('logout');
     // amazonq-ignore-next-line
