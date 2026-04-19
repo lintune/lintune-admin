@@ -11,6 +11,7 @@ Route::prefix('super')->name('super.')->group(function () {
     Route::get('/login', [SuperAuthController::class, 'showLogin'])->name('login');
     Route::post('/login', [SuperAuthController::class, 'login'])->name('login.submit');
     Route::post('/logout', [SuperAuthController::class, 'logout'])->name('logout');
+    Route::get('/session-check', [SuperAuthController::class, 'sessionCheck'])->name('session.check')->middleware(RequireSuperAuth::class);
 
     Route::middleware(RequireSuperAuth::class)->group(function () {
         Route::get('/realms', [SuperRealmController::class, 'index'])->name('realms');

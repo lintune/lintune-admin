@@ -19,6 +19,9 @@
         </li>
       </ul>
       <ul class="navbar-nav ms-auto">
+        <li class="nav-item d-flex align-items-center me-3">
+          <small class="text-muted">Session: <span id="session-timer" class="fw-bold">--:--</span></small>
+        </li>
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle" href="#" data-bs-toggle="dropdown">
             <i class="bi bi-person-circle me-1"></i>{{ session('super_username') }}
@@ -76,5 +79,43 @@
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/admin-lte@4.0.0-rc2/dist/js/adminlte.min.js"></script>
+<script>
+(function () {
+    let expiresAt = {{ session('super_token_expires_at', 0) }};
+    const timerEl = document.getElementById('session-timer');
+    const checkUrl = '{{ route('super.session.check') }}';
+    const loginUrl = '{{ route('super.login') }}';
+
+    function updateDisplay() {
+        const remaining = expiresAt - Math.floor(Date.now() / 1000);
+        if (remaining <= 0) {
+            timerEl.textContent = '00:00';
+            timerEl.classList.add('text-danger');
+            window.location.href = loginUrl;
+            return;
+        }
+        const m = String(Math.floor(remaining / 60)).padStart(2, '0');
+        const s = String(remaining % 60).padStart(2, '0');
+        timerEl.textContent = m + ':' + s;
+        timerEl.classList.toggle('text-warning', remaining < 60);
+        timerEl.classList.toggle('text-danger', remaining < 30);
+    }
+
+    async function refresh() {
+        try {
+            const res = await fetch(checkUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            const data = await res.json();
+            if (!data.valid) { window.location.href = loginUrl; return; }
+            expiresAt = data.expires_at;
+        } catch (e) {
+            window.location.href = loginUrl;
+        }
+    }
+
+    updateDisplay();
+    setInterval(updateDisplay, 1000);
+    setInterval(refresh, 30000);
+})();
+</script>
 </body>
 </html>
