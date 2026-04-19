@@ -156,7 +156,6 @@ class SuperRealmController extends Controller
             $mailcowEnabled = true;
         }
 
-        // amazonq-ignore-next-line
         DomainRealmMap::where('domain', $realm)->update(['mailcow_enabled' => $mailcowEnabled]);
 
         // 7. Set up broker-realm federation if broker realm is configured
@@ -266,7 +265,6 @@ class SuperRealmController extends Controller
 
     public function toggleMailcow(Request $request, string $realm)
     {
-        // amazonq-ignore-next-line
         $map = DomainRealmMap::where('realm', $realm)->firstOrFail();
 
         if (!config('mailcow.url') || !config('mailcow.api_key')) {
@@ -316,7 +314,6 @@ class SuperRealmController extends Controller
             return back()->withErrors(['realm' => 'Failed to delete realm.']);
         }
 
-        // amazonq-ignore-next-line
         DomainRealmMap::where('realm', $realm)->delete();
 
         if ($request->boolean('delete_mailcow') && config('mailcow.url') && config('mailcow.api_key')) {
