@@ -23,6 +23,10 @@ class SuperRealmController extends Controller
             'client_secret' => config('keycloak.admin_client_secret'),
         ]);
 
+        if ($res->failed() || empty($res->json()['access_token'])) {
+            abort(500, 'Could not obtain admin token from Keycloak. Check that the lintune-admin service account has the admin role assigned in the master realm.');
+        }
+
         return $res->json()['access_token'];
     }
 

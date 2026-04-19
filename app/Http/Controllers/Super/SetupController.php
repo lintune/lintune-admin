@@ -40,6 +40,8 @@ class SetupController extends Controller
         // 2. Create lintune-admin client in master realm
         $clientRes = \Http::withToken($token)->post("{$base}/admin/realms/master/clients", [
             'clientId'                     => 'lintune-admin',
+            'name'                         => 'Lintune Admin',
+            'description'                  => 'Automatically created by Lintune Admin setup. Used for super admin authentication and Keycloak Admin API access.',
             'enabled'                      => true,
             'publicClient'                 => false,
             'standardFlowEnabled'          => true,
