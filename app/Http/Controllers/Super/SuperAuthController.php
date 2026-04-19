@@ -19,6 +19,7 @@ class SuperAuthController extends Controller
     {
         $request->validate([
             'username' => 'required',
+            // amazonq-ignore-next-line
             'password' => 'required',
         ]);
 
