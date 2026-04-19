@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Super\AuditLogController;
 use App\Http\Controllers\Super\SuperAuthController;
 use App\Http\Controllers\Super\SuperRealmController;
 use App\Http\Middleware\RequireSuperAuth;
@@ -33,5 +34,7 @@ Route::prefix('super')->name('super.')->group(function () {
         Route::post('/realms/{realm}/toggle-mailcow', [SuperRealmController::class, 'toggleMailcow'])->name('realms.toggle-mailcow');
         // amazonq-ignore-next-line
         Route::delete('/realms/{realm}', [SuperRealmController::class, 'destroy'])->name('realms.destroy');
+        // amazonq-ignore-next-line
+        Route::get('/audit-logs', [AuditLogController::class, 'index'])->name('audit-logs');
     });
 });

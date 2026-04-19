@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Super;
 
 use App\Http\Controllers\Controller;
 use App\Models\DomainRealmMap;
+use App\Services\AuditLogger;
 use Illuminate\Http\Request;
 
 class SuperRealmController extends Controller
@@ -164,6 +165,8 @@ class SuperRealmController extends Controller
             $this->setupBrokerFederation($base, $token, $realm, $brokerRealm);
         }
 
+        AuditLogger::log('realm.created', $realm, "Mailcow: " . ($mailcowEnabled ? 'enabled' : 'disabled'));
+
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' created successfully.");
     }
 
@@ -243,6 +246,7 @@ class SuperRealmController extends Controller
         }
 
         $status = $enabled ? 'enabled' : 'disabled';
+        AuditLogger::log("realm.{$status}", $realm);
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' {$status}.");
     }
 
@@ -281,12 +285,14 @@ class SuperRealmController extends Controller
                 return back()->withErrors(['realm' => "Failed to remove Mailcow domain: {$detail}"]);
             }
             $map->update(['mailcow_enabled' => false]);
+            AuditLogger::log('mailcow.removed', $realm);
             return redirect()->route('super.realms')->with('success', "Mailcow domain '{$realm}' removed.");
         }
 
         // Link only — domain already exists in Mailcow, just update the DB
         if ($request->boolean('link_only')) {
             $map->update(['mailcow_enabled' => true]);
+            AuditLogger::log('mailcow.linked', $realm);
             return redirect()->route('super.realms')->with('success', "Mailcow domain '{$realm}' linked.");
         }
 
@@ -303,6 +309,7 @@ class SuperRealmController extends Controller
         }
 
         $map->update(['mailcow_enabled' => true]);
+        AuditLogger::log('mailcow.created', $realm);
         return redirect()->route('super.realms')->with('success', "Mailcow domain '{$realm}' created.");
     }
 
@@ -315,6 +322,7 @@ class SuperRealmController extends Controller
         }
 
         DomainRealmMap::where('realm', $realm)->delete();
+        AuditLogger::log('realm.deleted', $realm, $request->boolean('delete_mailcow') ? 'Mailcow domain also deleted' : null);
 
         if ($request->boolean('delete_mailcow') && config('mailcow.url') && config('mailcow.api_key')) {
             $apiBase = rtrim(config('mailcow.url'), '/') . '/api/v1';

@@ -53,9 +53,15 @@
       <nav class="mt-2">
         <ul class="nav sidebar-menu flex-column" data-lte-toggle="treeview">
           <li class="nav-item">
-            <a href="{{ route('super.realms') }}" class="nav-link {{ request()->routeIs('super.realms') ? 'active' : '' }}">
+            <a href="{{ route('super.realms') }}" class="nav-link {{ request()->routeIs('super.realms*') ? 'active' : '' }}">
               <i class="nav-icon bi bi-globe"></i>
               <p>Realms</p>
+            </a>
+          </li>
+          <li class="nav-item">
+            <a href="{{ route('super.audit-logs') }}" class="nav-link {{ request()->routeIs('super.audit-logs') ? 'active' : '' }}">
+              <i class="nav-icon bi bi-journal-text"></i>
+              <p>Audit Log</p>
             </a>
           </li>
         </ul>
