@@ -25,7 +25,10 @@ class SuperRealmController extends Controller
 
         $realms = $response->successful() ? $response->json() : [];
 
-        return view('super.realms', compact('realms'));
+        $domainMaps = DomainRealmMap::whereIn('realm', array_column($realms, 'realm'))
+            ->pluck('mailcow_enabled', 'realm');
+
+        return view('super.realms', compact('realms', 'domainMaps'));
     }
 
     public function create()
@@ -124,8 +127,32 @@ class SuperRealmController extends Controller
         // 5. Insert domain mapping
         DomainRealmMap::updateOrCreate(
             ['domain' => $realm],
-            ['realm'  => $realm]
+            ['realm'  => $realm, 'mailcow_enabled' => false]
         );
+
+        // 6. Create Mailcow domain if requested
+        $mailcowEnabled = false;
+        if ($request->boolean('enable_mailcow') && config('mailcow.url') && config('mailcow.api_key')) {
+            $mailcowRes = \Http::withHeaders([
+                'X-API-Key' => config('mailcow.api_key'),
+                'Accept'    => 'application/json',
+            ])->post(rtrim(config('mailcow.url'), '/') . '/api/v1/add/domain', [
+                'domain'       => $realm,
+                'active'       => '1',
+                'restart_sogo' => '1',
+            ]);
+
+            if ($mailcowRes->failed() || ($mailcowRes->json()[0]['type'] ?? '') === 'error') {
+                $detail = $mailcowRes->json()[0]['msg'] ?? $mailcowRes->body();
+                return redirect()->route('super.realms')
+                    ->with('success', "Realm '{$realm}' created successfully.")
+                    ->with('warning', "Mailcow domain creation failed: {$detail}");
+            }
+
+            $mailcowEnabled = true;
+        }
+
+        DomainRealmMap::where('domain', $realm)->update(['mailcow_enabled' => $mailcowEnabled]);
 
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' created successfully.");
     }
@@ -146,6 +173,66 @@ class SuperRealmController extends Controller
 
         $status = $enabled ? 'enabled' : 'disabled';
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' {$status}.");
+    }
+
+    public function checkMailcow(string $realm)
+    {
+        if (!config('mailcow.url') || !config('mailcow.api_key')) {
+            return response()->json(['configured' => false]);
+        }
+
+        $apiBase = rtrim(config('mailcow.url'), '/') . '/api/v1';
+        $headers = ['X-API-Key' => config('mailcow.api_key'), 'Accept' => 'application/json'];
+
+        $res = \Http::withHeaders($headers)->get("{$apiBase}/get/domain/{$realm}");
+
+        // Mailcow returns the domain object if found, or an empty array / 404 if not
+        $exists = $res->successful() && !empty($res->json()) && !isset($res->json()['type']);
+
+        return response()->json(['exists' => $exists]);
+    }
+
+    public function toggleMailcow(Request $request, string $realm)
+    {
+        $map = DomainRealmMap::where('realm', $realm)->firstOrFail();
+
+        if (!config('mailcow.url') || !config('mailcow.api_key')) {
+            return back()->withErrors(['realm' => 'Mailcow is not configured.']);
+        }
+
+        $apiBase = rtrim(config('mailcow.url'), '/') . '/api/v1';
+        $headers = ['X-API-Key' => config('mailcow.api_key'), 'Accept' => 'application/json'];
+
+        if ($map->mailcow_enabled) {
+            $res = \Http::withHeaders($headers)->delete("{$apiBase}/delete/domain", [$realm]);
+            if ($res->failed() || ($res->json()[0]['type'] ?? '') === 'error') {
+                $detail = $res->json()[0]['msg'] ?? $res->body();
+                return back()->withErrors(['realm' => "Failed to remove Mailcow domain: {$detail}"]);
+            }
+            $map->update(['mailcow_enabled' => false]);
+            return redirect()->route('super.realms')->with('success', "Mailcow domain '{$realm}' removed.");
+        }
+
+        // Link only — domain already exists in Mailcow, just update the DB
+        if ($request->boolean('link_only')) {
+            $map->update(['mailcow_enabled' => true]);
+            return redirect()->route('super.realms')->with('success', "Mailcow domain '{$realm}' linked.");
+        }
+
+        // Create the domain in Mailcow
+        $res = \Http::withHeaders($headers)->post("{$apiBase}/add/domain", [
+            'domain'       => $realm,
+            'active'       => '1',
+            'restart_sogo' => '1',
+        ]);
+
+        if ($res->failed() || ($res->json()[0]['type'] ?? '') === 'error') {
+            $detail = $res->json()[0]['msg'] ?? $res->body();
+            return back()->withErrors(['realm' => "Failed to create Mailcow domain: {$detail}"]);
+        }
+
+        $map->update(['mailcow_enabled' => true]);
+        return redirect()->route('super.realms')->with('success', "Mailcow domain '{$realm}' created.");
     }
 
     public function destroy(string $realm)
