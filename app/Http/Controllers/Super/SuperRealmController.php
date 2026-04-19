@@ -66,10 +66,10 @@ class SuperRealmController extends Controller
             'standardFlowEnabled'          => true,
             'directAccessGrantsEnabled'    => false,
             'redirectUris'                 => ["{$appUrl}/auth/callback"],
-            'postLogoutRedirectUris'        => ["{$appUrl}/login"],
             'webOrigins'                   => [$appUrl],
             'attributes'                   => [
-                'pkce.code.challenge.method' => 'S256',
+                'pkce.code.challenge.method'  => 'S256',
+                'post.logout.redirect.uris'   => "{$appUrl}/login",
             ],
         ]);
 
