@@ -95,15 +95,18 @@ class SetupController extends Controller
             }
             $clientSecret = $secretRes->json()['value'];
 
-            // 3. Create broker realm with random name
-            $brokerRealm = 'broker-' . Str::lower(Str::random(8));
-            $brokerRes   = \Http::withToken($token)->post("{$base}/admin/realms", [
-                'realm'   => $brokerRealm,
-                'enabled' => true,
-            ]);
+            // 3. Create broker realm only if not already configured
+            $brokerRealm = config('keycloak.broker_realm');
+            if (!$brokerRealm) {
+                $brokerRealm = 'broker-' . Str::lower(Str::random(8));
+                $brokerRes   = \Http::withToken($token)->post("{$base}/admin/realms", [
+                    'realm'   => $brokerRealm,
+                    'enabled' => true,
+                ]);
 
-            if ($brokerRes->failed()) {
-                return back()->withErrors(['auth' => 'Failed to create broker realm: ' . $brokerRes->body()]);
+                if ($brokerRes->failed()) {
+                    return back()->withErrors(['auth' => 'Failed to create broker realm: ' . $brokerRes->body()]);
+                }
             }
         }
 
@@ -167,7 +170,9 @@ class SetupController extends Controller
 
         if (!$isRepair) {
             $envValues['KEYCLOAK_ADMIN_CLIENT_SECRET'] = $clientSecret;
-            $envValues['KEYCLOAK_BROKER_REALM']        = $brokerRealm;
+            if (!config('keycloak.broker_realm')) {
+                $envValues['KEYCLOAK_BROKER_REALM'] = $brokerRealm;
+            }
         }
 
         $this->writeEnv($envValues);
