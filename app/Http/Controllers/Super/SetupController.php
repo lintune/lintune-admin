@@ -81,13 +81,20 @@ class SetupController extends Controller
         }
 
         $role = $adminRoleRes->json();
+        $rolePayload = json_encode([[
+            'id'          => $role['id'],
+            'name'        => $role['name'],
+            'composite'   => $role['composite'],
+            'clientRole'  => $role['clientRole'],
+            'containerId' => $role['containerId'],
+        ]]);
 
         $roleAssignRes = \Http::withToken($token)
-            ->withBody(json_encode([$role]), 'application/json')
+            ->withBody($rolePayload, 'application/json')
             ->post("{$base}/admin/realms/master/users/{$serviceAccountId}/role-mappings/realm");
 
         if ($roleAssignRes->failed()) {
-            return back()->withErrors(['auth' => 'Failed to assign admin role to service account: ' . $roleAssignRes->body()]);
+            return back()->withErrors(['auth' => 'Failed to assign admin role: ' . $roleAssignRes->body()]);
         }
 
         // 5. Create broker realm with random name
