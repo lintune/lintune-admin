@@ -137,7 +137,7 @@ document.getElementById('confirmModal').addEventListener('show.bs.modal', functi
                 This will permanently delete the realm and all its users and data in Keycloak. This cannot be undone.</div>
             ${mailcowEnabled ? `
             <div class="form-check">
-                <input class="form-check-input" type="checkbox" id="deleteMailcowCheck" name="delete_mailcow" value="1" />
+                <input class="form-check-input" type="checkbox" id="deleteMailcowCheck" />
                 <label class="form-check-label" for="deleteMailcowCheck">
                     Also delete the Mailcow domain and all its mailboxes
                 </label>
@@ -145,7 +145,19 @@ document.getElementById('confirmModal').addEventListener('show.bs.modal', functi
         confirm.className = 'btn btn-danger';
         confirm.textContent = 'Yes, delete';
         document.getElementById('linkOnlyField')?.remove();
+        // remove any leftover hidden field from a previous open
+        document.getElementById('deleteMailcowField')?.remove();
+        // on submit, read the checkbox (which is outside the form) and inject a hidden field
+        form.onsubmit = function () {
+            document.getElementById('deleteMailcowField')?.remove();
+            if (mailcowEnabled && document.getElementById('deleteMailcowCheck')?.checked) {
+                const h = document.createElement('input');
+                h.type = 'hidden'; h.name = 'delete_mailcow'; h.value = '1'; h.id = 'deleteMailcowField';
+                form.appendChild(h);
+            }
+        };
     } else if (action === 'toggle-mailcow') {
+        form.onsubmit = null;
         const mailcowEnabled = btn.dataset.mailcowEnabled === '1';
         form.action  = `/super/realms/${realm}/toggle-mailcow`;
         method.value = 'POST';
@@ -189,6 +201,7 @@ document.getElementById('confirmModal').addEventListener('show.bs.modal', functi
                 });
         }
     } else {
+        form.onsubmit = null;
         form.action   = `/super/realms/${realm}/toggle`;
         method.value  = 'POST';
         const verb    = enabled ? 'disable' : 'enable';
