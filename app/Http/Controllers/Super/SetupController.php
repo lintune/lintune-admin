@@ -80,7 +80,7 @@ class SetupController extends Controller
             return back()->withErrors(['auth' => 'Failed to fetch admin role.']);
         }
 
-        $roleAssignRes = \Http::withToken($token)->post(
+        $roleAssignRes = \Http::withToken($token)->asJson()->post(
             "{$base}/admin/realms/master/users/{$serviceAccountId}/role-mappings/realm",
             [$adminRoleRes->json()]
         );
