@@ -97,6 +97,27 @@ class SetupController extends Controller
             return back()->withErrors(['auth' => 'Failed to assign admin role: ' . $roleAssignRes->body()]);
         }
 
+        // 4b. Also assign all master-realm client roles (required for cross-realm Admin REST API access)
+        $masterRealmClients = \Http::withToken($token)->get("{$base}/admin/realms/master/clients", ['clientId' => 'master-realm'])->json();
+        $masterRealmClient  = collect($masterRealmClients)->firstWhere('clientId', 'master-realm');
+
+        if ($masterRealmClient) {
+            $masterRealmClientId = $masterRealmClient['id'];
+            $masterRealmRoles    = \Http::withToken($token)->get("{$base}/admin/realms/master/clients/{$masterRealmClientId}/roles")->json();
+
+            $rolePayloadMaster = json_encode(array_map(fn($r) => [
+                'id'          => $r['id'],
+                'name'        => $r['name'],
+                'composite'   => $r['composite'],
+                'clientRole'  => $r['clientRole'],
+                'containerId' => $r['containerId'],
+            ], $masterRealmRoles));
+
+            \Http::withToken($token)
+                ->withBody($rolePayloadMaster, 'application/json')
+                ->post("{$base}/admin/realms/master/users/{$serviceAccountId}/role-mappings/clients/{$masterRealmClientId}");
+        }
+
         // 5. Create broker realm with random name
         $brokerRealm = 'broker-' . Str::lower(Str::random(8));
         $brokerRes = \Http::withToken($token)->post("{$base}/admin/realms", [
