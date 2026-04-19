@@ -1,5 +1,7 @@
 # Lintune Admin
 
+> ⚠️ This project is under active development and is not yet production ready. Expect breaking changes.
+
 Lintune Admin is the super admin portal for the Lintune platform — an open-source alternative to Microsoft Azure AD / Entra ID, Exchange, and OneDrive, built on open-source components.
 
 | Component | Role |
@@ -7,6 +9,8 @@ Lintune Admin is the super admin portal for the Lintune platform — an open-sou
 | [Keycloak](https://www.keycloak.org/) | Identity provider — realms, users, SSO |
 | [Mailcow](https://mailcow.email/) | Email server — domains, mailboxes |
 | Nextcloud *(planned)* | File storage & collaboration |
+| PowerDNS *(planned)* | DNS management — zones, records |
+| SSSD / Keycloak LDAP *(planned)* | Workstation login — Linux & Windows |
 
 This repo is the **super admin layer**. It is not customer-facing. Only platform operators use it.
 
@@ -79,3 +83,32 @@ If the service account is ever deleted or its password changed, set `SETUP_COMPL
 ## Installation
 
 See [docs/install.md](docs/install.md).
+
+## Roadmap
+
+The platform is being built incrementally. Contributions and ideas are welcome.
+
+### In progress
+- [ ] Nextcloud integration — provision a Nextcloud user space per tenant on realm creation
+
+### Planned
+- [ ] **PowerDNS integration** — auto-create DNS zones per tenant domain and seed MX, SPF, DKIM and DMARC records on realm creation
+- [ ] **Workstation login** — expose a read-only, realm-scoped Keycloak LDAP endpoint per tenant so workstations (Linux via SSSD, Windows via Kerberos) can authenticate against the same user directory without Active Directory
+- [ ] **Headscale integration** — per-tenant managed VPN mesh so MSPs can offer secure remote access to workstations without opening firewall ports
+- [ ] **Tenant billing / usage overview** — per-realm user count, mailbox count, storage usage in one view for MSP billing purposes
+- [ ] **Bulk onboarding** — import multiple tenants from CSV
+- [ ] **Webhook support** — notify external systems when a realm is created or deleted
+
+### On the radar
+These are not yet planned but worth watching as the ecosystem matures:
+- **Mobile / device management (MDM)** — open source MDM is fragmented today (MicroMDM for Apple, Flyve for Android) but if a solid cross-platform option emerges it fits naturally here
+- **Rudder** — open source IT automation and compliance for workstations, potential fit for policy enforcement once workstation login is in place
+- **Passkey / FIDO2 enforcement** — Keycloak supports WebAuthn natively, exposing this per-tenant in lintune-dash would allow MSPs to enforce passwordless login
+
+### The bigger picture
+The goal is to make it possible for an MSP to onboard a new customer — email, file storage, user directory, workstation login, VPN access, DNS — with a single form submission, on a fully self-hosted open source stack. No Active Directory. No Microsoft 365. No per-seat licensing.
+
+If you have ideas for components or integrations that fit this vision, open an issue or start a discussion on GitHub.
+
+### Ideas welcome
+Have an idea for a component or integration that fits the vision? Open an issue or start a discussion on GitHub. The goal is to make Lintune a complete, self-hosted alternative to Microsoft 365 for MSPs and self-hosters — if something fits that vision, it's worth discussing.
