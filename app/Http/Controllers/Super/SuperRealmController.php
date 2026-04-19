@@ -25,6 +25,10 @@ class SuperRealmController extends Controller
 
         $realms = $response->successful() ? $response->json() : [];
 
+        // Filter out system realms
+        $systemRealms = ['master', config('keycloak.broker_realm')];
+        $realms = array_values(array_filter($realms, fn($r) => !in_array($r['realm'], $systemRealms)));
+
         $domainMaps = DomainRealmMap::whereIn('realm', array_column($realms, 'realm'))
             ->pluck('mailcow_enabled', 'realm');
 
@@ -154,7 +158,74 @@ class SuperRealmController extends Controller
 
         DomainRealmMap::where('domain', $realm)->update(['mailcow_enabled' => $mailcowEnabled]);
 
+        // 7. Set up broker-realm federation if broker realm is configured
+        $brokerRealm = config('keycloak.broker_realm');
+        if ($brokerRealm) {
+            $this->setupBrokerFederation($base, $token, $realm, $brokerRealm);
+        }
+
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' created successfully.");
+    }
+
+    private function setupBrokerFederation(string $base, string $token, string $realm, string $brokerRealm): void
+    {
+        // Step 1: Create a confidential client in the new realm for the broker to connect with
+        $clientRes = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/clients", [
+            'clientId'                  => 'broker-realm-client',
+            'enabled'                   => true,
+            'publicClient'              => false,
+            'standardFlowEnabled'       => true,
+            'directAccessGrantsEnabled' => false,
+            'redirectUris'              => ["{$base}/realms/{$brokerRealm}/broker/{$realm}/endpoint"],
+        ]);
+
+        if ($clientRes->failed()) return;
+
+        // Step 2: Fetch the internal client UUID and its secret
+        $clientId  = basename($clientRes->header('Location'));
+        $secretRes = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients/{$clientId}/client-secret");
+        $secret    = $secretRes->json()['value'] ?? null;
+
+        if (!$secret) return;
+
+        // Step 3: Create the Identity Provider in broker-realm pointing to the new realm
+        $idpRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances", [
+            'alias'                     => $realm,
+            'displayName'               => $realm,
+            'providerId'                => 'oidc',
+            'enabled'                   => true,
+            'trustEmail'                => true,
+            'firstBrokerLoginFlowAlias' => 'first broker login',
+            'config' => [
+                'clientId'                => 'broker-realm-client',
+                'clientSecret'            => $secret,
+                'authorizationUrl'        => "{$base}/realms/{$realm}/protocol/openid-connect/auth",
+                'tokenUrl'                => "{$base}/realms/{$realm}/protocol/openid-connect/token",
+                'jwksUrl'                 => "{$base}/realms/{$realm}/protocol/openid-connect/certs",
+                'logoutUrl'               => "{$base}/realms/{$realm}/protocol/openid-connect/logout",
+                'userInfoUrl'             => "{$base}/realms/{$realm}/protocol/openid-connect/userinfo",
+                'issuer'                  => "{$base}/realms/{$realm}",
+                'validateSignature'       => 'true',
+                'useJwksUrl'              => 'true',
+                'pkceEnabled'             => 'false',
+                'syncMode'                => 'IMPORT',
+            ],
+        ]);
+
+        if ($idpRes->failed()) return;
+
+        // Step 4: Add email mapper to the IDP so email claim flows through to broker-realm
+        $idpAlias = $realm;
+        \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$idpAlias}/mappers", [
+            'name'                   => 'email',
+            'identityProviderAlias'  => $idpAlias,
+            'identityProviderMapper' => 'oidc-user-attribute-idp-mapper',
+            'config' => [
+                'syncMode'       => 'INHERIT',
+                'claim'          => 'email',
+                'user.attribute' => 'email',
+            ],
+        ]);
     }
 
     public function toggle(string $realm)
