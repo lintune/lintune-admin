@@ -56,6 +56,7 @@
             </td>
             @endif
             <td class="text-end pe-3">
+              @if($realm['realm'] !== 'master')
               <button type="button" class="btn btn-sm {{ $enabled ? 'btn-warning' : 'btn-success' }} me-1"
                 data-action="toggle"
                 data-realm="{{ $realm['realm'] }}"
@@ -72,12 +73,15 @@
                 <i class="bi bi-envelope{{ $mailcowEnabled ? '-dash' : '-plus' }} me-1"></i>{{ $mailcowEnabled ? 'Remove Mailcow' : 'Add Mailcow' }}
               </button>
               @endif
+              @endif
+              @if($realm['realm'] !== 'master')
               <button type="button" class="btn btn-sm btn-danger"
                 data-action="delete"
                 data-realm="{{ $realm['realm'] }}"
                 data-bs-toggle="modal" data-bs-target="#confirmModal">
                 <i class="bi bi-trash me-1"></i>Delete
               </button>
+              @endif
             </td>
           </tr>
           @endforeach
