@@ -204,7 +204,7 @@ class SuperRealmController extends Controller
         $headers = ['X-API-Key' => config('mailcow.api_key'), 'Accept' => 'application/json'];
 
         if ($map->mailcow_enabled) {
-            $res = \Http::withHeaders($headers)->delete("{$apiBase}/delete/domain", [$realm]);
+            $res = \Http::withHeaders($headers)->post("{$apiBase}/delete/domain", [$realm]);
             if ($res->failed() || ($res->json()[0]['type'] ?? '') === 'error') {
                 $detail = $res->json()[0]['msg'] ?? $res->body();
                 return back()->withErrors(['realm' => "Failed to remove Mailcow domain: {$detail}"]);
