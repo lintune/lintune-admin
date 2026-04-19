@@ -39,14 +39,15 @@ class SetupController extends Controller
 
         // 2. Create lintune-admin client in master realm
         $clientRes = \Http::withToken($token)->post("{$base}/admin/realms/master/clients", [
-            'clientId'                  => 'lintune-admin',
-            'enabled'                   => true,
-            'publicClient'              => false,
-            'standardFlowEnabled'       => true,
-            'directAccessGrantsEnabled' => false,
-            'redirectUris'              => ["{$appUrl}/super/auth/callback"],
-            'webOrigins'                => [$appUrl],
-            'attributes'                => [
+            'clientId'                     => 'lintune-admin',
+            'enabled'                      => true,
+            'publicClient'                 => false,
+            'standardFlowEnabled'          => true,
+            'directAccessGrantsEnabled'    => false,
+            'serviceAccountsEnabled'       => true,
+            'redirectUris'                 => ["{$appUrl}/super/auth/callback"],
+            'webOrigins'                   => [$appUrl],
+            'attributes'                   => [
                 'post.logout.redirect.uris' => "{$appUrl}/super/login",
             ],
         ]);
@@ -64,7 +65,22 @@ class SetupController extends Controller
         }
         $clientSecret = $secretRes->json()['value'];
 
-        // 4. Create broker realm with random name
+        // 4. Assign admin role to the service account so client credentials can use Admin API
+        $serviceAccountRes = \Http::withToken($token)->get("{$base}/admin/realms/master/clients/{$clientUuid}/service-account-user");
+        if ($serviceAccountRes->successful()) {
+            $serviceAccountId = $serviceAccountRes->json()['id'];
+
+            // Get the admin role from master realm
+            $adminRoleRes = \Http::withToken($token)->get("{$base}/admin/realms/master/roles/admin");
+            if ($adminRoleRes->successful()) {
+                \Http::withToken($token)->post(
+                    "{$base}/admin/realms/master/users/{$serviceAccountId}/role-mappings/realm",
+                    [$adminRoleRes->json()]
+                );
+            }
+        }
+
+        // 5. Create broker realm with random name
         $brokerRealm = 'broker-' . Str::lower(Str::random(8));
         $brokerRes = \Http::withToken($token)->post("{$base}/admin/realms", [
             'realm'   => $brokerRealm,
@@ -75,14 +91,14 @@ class SetupController extends Controller
             return back()->withErrors(['auth' => 'Failed to create broker realm: ' . $brokerRes->body()]);
         }
 
-        // 5. Write to .env and lock setup
+        // 6. Write to .env and lock setup
         $this->writeEnv([
             'KEYCLOAK_ADMIN_CLIENT_SECRET' => $clientSecret,
             'KEYCLOAK_BROKER_REALM'        => $brokerRealm,
             'SETUP_COMPLETE'               => 'true',
         ]);
 
-        // 6. Clear config cache so new values are picked up
+        // 7. Clear config cache so new values are picked up
         \Artisan::call('config:clear');
 
         return redirect()->route('super.login');

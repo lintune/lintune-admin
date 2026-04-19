@@ -14,6 +14,18 @@ class SuperRealmController extends Controller
         return session('super_access_token');
     }
 
+    private function adminToken(): string
+    {
+        $base = $this->baseUrl();
+        $res  = \Http::asForm()->post("{$base}/realms/master/protocol/openid-connect/token", [
+            'grant_type'    => 'client_credentials',
+            'client_id'     => 'lintune-admin',
+            'client_secret' => config('keycloak.admin_client_secret'),
+        ]);
+
+        return $res->json()['access_token'];
+    }
+
     private function baseUrl(): string
     {
         return config('keycloak.base_url');
@@ -21,7 +33,7 @@ class SuperRealmController extends Controller
 
     public function index()
     {
-        $response = \Http::withToken($this->token())
+        $response = \Http::withToken($this->adminToken())
             ->get("{$this->baseUrl()}/admin/realms");
 
         $realms = $response->successful() ? $response->json() : [];
@@ -53,7 +65,7 @@ class SuperRealmController extends Controller
 
         $realm   = $request->realm;
         $base    = $this->baseUrl();
-        $token   = $this->token();
+        $token   = $this->adminToken();
         $appUrl  = rtrim(config('keycloak.frontend_url'), '/');
 
         // 1. Create realm
@@ -234,7 +246,7 @@ class SuperRealmController extends Controller
     public function toggle(string $realm)
     {
         $base  = $this->baseUrl();
-        $token = $this->token();
+        $token = $this->adminToken();
 
         $current = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}")->json();
         $enabled = !($current['enabled'] ?? false);
@@ -315,7 +327,7 @@ class SuperRealmController extends Controller
 
     public function destroy(Request $request, string $realm)
     {
-        $res = \Http::withToken($this->token())->delete("{$this->baseUrl()}/admin/realms/{$realm}");
+        $res = \Http::withToken($this->adminToken())->delete("{$this->baseUrl()}/admin/realms/{$realm}");
 
         if ($res->failed()) {
             return back()->withErrors(['realm' => 'Failed to delete realm.']);
