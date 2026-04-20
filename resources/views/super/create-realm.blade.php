@@ -53,18 +53,6 @@
         <input type="password" name="admin_password" class="form-control" required minlength="8" />
       </div>
 
-      @if(config('mailcow.url'))
-      <hr />
-      <h6 class="text-muted mb-3">Integrations</h6>
-      <div class="form-check mb-4">
-        <input class="form-check-input" type="checkbox" name="enable_mailcow" id="enable_mailcow" value="1"
-               {{ old('enable_mailcow') ? 'checked' : '' }} />
-        <label class="form-check-label" for="enable_mailcow">
-          Create Mailcow domain <small class="text-muted">({{ parse_url(config('mailcow.url'), PHP_URL_HOST) }})</small>
-        </label>
-      </div>
-      @endif
-
       <div class="d-flex gap-2">
         <button type="submit" class="btn btn-primary">Create Realm</button>
         <a href="{{ route('super.realms') }}" class="btn btn-secondary">Cancel</a>

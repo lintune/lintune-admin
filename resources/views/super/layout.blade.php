@@ -67,6 +67,12 @@
               <p>Audit Log</p>
             </a>
           </li>
+          <li class="nav-item">
+            <a href="{{ route('super.settings') }}" class="nav-link {{ request()->routeIs('super.settings') ? 'active' : '' }}">
+              <i class="nav-icon bi bi-gear"></i>
+              <p>Settings</p>
+            </a>
+          </li>
         </ul>
       </nav>
     </div>

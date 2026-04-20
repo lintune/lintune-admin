@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Super\SettingsController;
 use App\Http\Controllers\Super\AuditLogController;
 use App\Http\Controllers\Super\SetupController;
 use App\Http\Controllers\Super\SuperAuthController;
@@ -39,12 +40,18 @@ Route::prefix('super')->name('super.')->middleware(SetupComplete::class)->group(
         // amazonq-ignore-next-line
         Route::post('/realms/{realm}/toggle', [SuperRealmController::class, 'toggle'])->name('realms.toggle');
         // amazonq-ignore-next-line
-        Route::get('/realms/{realm}/check-mailcow', [SuperRealmController::class, 'checkMailcow'])->name('realms.check-mailcow');
+        Route::get('/realms/{realm}/mailcow-settings', [SuperRealmController::class, 'mailcowSettings'])->name('realms.mailcow-settings');
         // amazonq-ignore-next-line
-        Route::post('/realms/{realm}/toggle-mailcow', [SuperRealmController::class, 'toggleMailcow'])->name('realms.toggle-mailcow');
+        Route::put('/realms/{realm}/mailcow-limits', [SuperRealmController::class, 'updateMailcowLimits'])->name('realms.mailcow-limits');
+        // amazonq-ignore-next-line
+        Route::delete('/realms/{realm}/mailcow', [SuperRealmController::class, 'removeMailcow'])->name('realms.remove-mailcow');
         // amazonq-ignore-next-line
         Route::delete('/realms/{realm}', [SuperRealmController::class, 'destroy'])->name('realms.destroy');
         // amazonq-ignore-next-line
         Route::get('/audit-logs', [AuditLogController::class, 'index'])->name('audit-logs');
+        // amazonq-ignore-next-line
+        Route::get('/settings', [SettingsController::class, 'show'])->name('settings');
+        // amazonq-ignore-next-line
+        Route::put('/settings', [SettingsController::class, 'update'])->name('settings.update');
     });
 });
