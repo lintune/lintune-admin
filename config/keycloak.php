@@ -7,6 +7,5 @@ return [
     'admin_cli_client'    => env('KEYCLOAK_ADMIN_CLI_CLIENT', 'admin-cli'),
     'admin_user'          => env('KEYCLOAK_ADMIN_USER'),
     'admin_password'      => env('KEYCLOAK_ADMIN_PASSWORD'),
-    'frontend_url'        => env('FRONTEND_URL', 'https://dash.lintune.xyz'),
     'broker_realm'        => env('KEYCLOAK_BROKER_REALM'),
 ];
