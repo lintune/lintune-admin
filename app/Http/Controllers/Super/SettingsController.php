@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Super;
 
 use App\Http\Controllers\Controller;
 use App\Models\Setting;
+use App\Services\AuditLogger;
 use Illuminate\Http\Request;
 
 class SettingsController extends Controller
@@ -56,6 +57,7 @@ class SettingsController extends Controller
             Setting::set('nextcloud.service_password', $request->nextcloud_password, true);
         }
 
+        AuditLogger::log('settings.updated');
         return back()->with('success', 'Settings saved.');
     }
 }
