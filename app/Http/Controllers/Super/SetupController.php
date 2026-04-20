@@ -17,7 +17,7 @@ class SetupController extends Controller
         $serviceAccountOk = false;
         if ($repairMode) {
             try {
-                $base = config('keycloak.base_url');
+                $base = rtrim(config('keycloak.base_url'), '/');
                 $res  = \Http::asForm()->post("{$base}/realms/master/protocol/openid-connect/token", [
                     'grant_type' => 'password',
                     'client_id'  => 'admin-cli',
@@ -40,7 +40,7 @@ class SetupController extends Controller
             'password' => 'required',
         ]);
 
-        $base   = config('keycloak.base_url');
+        $base   = rtrim(config('keycloak.base_url'), '/');
         $appUrl = rtrim(config('app.url'), '/');
 
         // 1. Verify provided admin credentials
