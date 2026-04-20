@@ -92,6 +92,8 @@ The platform is being built incrementally. Contributions and ideas are welcome.
 - [ ] Nextcloud integration — provision a Nextcloud user space per tenant on realm creation
 
 ### Planned
+- [ ] **Mailcow domain limits** — configurable default limits (mailbox count, alias count, quota per mailbox) stored in a `settings` table and manageable via a platform settings page. Defaults are pre-filled when provisioning a new realm but can be overridden per tenant
+- [ ] **Welcome email on realm creation** — send a welcome email to the initial admin user when a realm is provisioned. Sender is configurable in platform settings (e.g. `noreply@msp.com`), falling back to the logged-in super admin's email. MSP sender email is stored in the `settings` table and shared with lintune-dash for fallback use
 - [ ] **DNS integration** — auto-create DNS zones per tenant domain and seed MX, SPF, DKIM and DMARC records on realm creation. Supports **PowerDNS** (self-hosted) and **Cloudflare** (managed DNS)
 - [ ] **Workstation login** — expose a read-only, realm-scoped Keycloak LDAP endpoint per tenant so workstations (Linux via SSSD, Windows via Kerberos) can authenticate against the same user directory without Active Directory
 - [ ] **Headscale integration** — per-tenant managed VPN mesh so MSPs can offer secure remote access to workstations without opening firewall ports

@@ -39,7 +39,13 @@
 
       <div class="mb-3">
         <label class="form-label">Email</label>
-        <input type="email" name="admin_email" class="form-control" value="{{ old('admin_email') }}" required />
+        <div class="input-group">
+          <input type="text" name="admin_local_part" class="form-control" id="admin_local_part"
+                 value="{{ old('admin_local_part') }}" placeholder="admin" required
+                 pattern="[a-zA-Z0-9_.\-]+" />
+          <span class="input-group-text" id="email-domain-suffix">@<span id="realm-suffix">{{ old('realm', 'domain') }}</span></span>
+        </div>
+        <small class="text-muted">Username will be <span id="email-preview">admin@{{ old('realm', 'domain') }}</span></small>
       </div>
 
       <div class="mb-4">
@@ -67,3 +73,21 @@
   </div>
 </div>
 @endsection
+
+@push('scripts')
+<script>
+  const realmInput = document.querySelector('input[name="realm"]');
+  const suffix     = document.getElementById('realm-suffix');
+  const preview    = document.getElementById('email-preview');
+  const localPart  = document.getElementById('admin_local_part');
+
+  function updateSuffix() {
+    const domain = realmInput.value.trim() || 'domain';
+    suffix.textContent  = domain;
+    preview.textContent = (localPart.value.trim() || 'admin') + '@' + domain;
+  }
+
+  realmInput.addEventListener('input', updateSuffix);
+  localPart.addEventListener('input', updateSuffix);
+</script>
+@endpush

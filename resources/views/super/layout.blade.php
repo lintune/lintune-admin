@@ -88,6 +88,7 @@
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/admin-lte@4.0.0-rc2/dist/js/adminlte.min.js" crossorigin="anonymous"></script>
+@stack('scripts')
 <script>
 (function () {
     const INACTIVITY_LIMIT = 5 * 60;

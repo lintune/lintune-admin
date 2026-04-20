@@ -8,4 +8,5 @@ return [
     'admin_user'          => env('KEYCLOAK_ADMIN_USER'),
     'admin_password'      => env('KEYCLOAK_ADMIN_PASSWORD'),
     'broker_realm'        => env('KEYCLOAK_BROKER_REALM'),
+    'dash_url'            => env('DASH_URL'),
 ];

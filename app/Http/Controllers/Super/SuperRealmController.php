@@ -33,7 +33,7 @@ class SuperRealmController extends Controller
 
     private function baseUrl(): string
     {
-        return config('keycloak.base_url');
+        return rtrim(config('keycloak.base_url'), '/');
     }
 
     public function index()
@@ -43,7 +43,6 @@ class SuperRealmController extends Controller
 
         $realms = $response->successful() ? $response->json() : [];
 
-        // Filter out system realms
         $systemRealms = ['master', config('keycloak.broker_realm')];
         $realms = array_values(array_filter($realms, fn($r) => !in_array($r['realm'], $systemRealms)));
 
@@ -61,17 +60,18 @@ class SuperRealmController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'realm'          => ['required', 'regex:/^[a-zA-Z0-9_.\-]+$/'],
-            'admin_email'    => 'required|email',
-            'admin_password' => 'required|min:8',
-            'admin_firstname'=> 'required',
-            'admin_lastname' => 'required',
+            'realm'            => ['required', 'regex:/^[a-zA-Z0-9_.\-]+$/'],
+            'admin_local_part' => ['required', 'regex:/^[a-zA-Z0-9_.\-]+$/'],
+            'admin_password'   => 'required|min:8',
+            'admin_firstname'  => 'required|string|max:255',
+            'admin_lastname'   => 'required|string|max:255',
         ]);
 
-        $realm   = $request->realm;
-        $base    = $this->baseUrl();
-        $token   = $this->adminToken();
-        $appUrl  = rtrim(config('keycloak.frontend_url'), '/');
+        $realm      = strtolower(trim($request->realm));
+        $adminEmail = strtolower(trim($request->admin_local_part)) . '@' . $realm;
+        $base       = $this->baseUrl();
+        $token      = $this->adminToken();
+        $dashUrl    = rtrim(config('keycloak.dash_url'), '/');
 
         // 1. Create realm
         $realmRes = \Http::withToken($token)->post("{$base}/admin/realms", [
@@ -85,16 +85,16 @@ class SuperRealmController extends Controller
 
         // 2. Create client
         $clientRes = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/clients", [
-            'clientId'                     => config('keycloak.client_id'),
-            'enabled'                      => true,
-            'publicClient'                 => true,
-            'standardFlowEnabled'          => true,
-            'directAccessGrantsEnabled'    => false,
-            'redirectUris'                 => ["{$appUrl}/auth/callback"],
-            'webOrigins'                   => [$appUrl],
-            'attributes'                   => [
-                'pkce.code.challenge.method'  => 'S256',
-                'post.logout.redirect.uris'   => "{$appUrl}/login",
+            'clientId'                  => config('keycloak.client_id'),
+            'enabled'                   => true,
+            'publicClient'              => true,
+            'standardFlowEnabled'       => true,
+            'directAccessGrantsEnabled' => false,
+            'redirectUris'              => ["{$dashUrl}/auth/callback"],
+            'webOrigins'                => [$dashUrl],
+            'attributes'                => [
+                'pkce.code.challenge.method' => 'S256',
+                'post.logout.redirect.uris'  => "{$dashUrl}/login",
             ],
         ]);
 
@@ -104,10 +104,10 @@ class SuperRealmController extends Controller
 
         // 3. Create first admin user
         $userRes = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/users", [
-            'username'      => $request->admin_email,
-            'email'         => $request->admin_email,
-            'firstName'     => $request->admin_firstname,
-            'lastName'      => $request->admin_lastname,
+            'username'      => $adminEmail,
+            'email'         => $adminEmail,
+            'firstName'     => trim($request->admin_firstname),
+            'lastName'      => trim($request->admin_lastname),
             'enabled'       => true,
             'emailVerified' => true,
             'credentials'   => [[
@@ -122,12 +122,8 @@ class SuperRealmController extends Controller
         }
 
         // 4. Assign realm-admin role to the user
-        $userId = basename($userRes->header('Location'));
-
-        $rolesRes = \Http::withToken($token)
-            ->get("{$base}/admin/realms/{$realm}/clients");
-
-        $clients    = $rolesRes->json();
+        $userId  = basename($userRes->header('Location'));
+        $clients = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients")->json();
         $mgmtClient = collect($clients)->firstWhere('clientId', 'realm-management');
 
         if ($mgmtClient) {
@@ -135,7 +131,6 @@ class SuperRealmController extends Controller
             $rolesData = \Http::withToken($token)
                 ->get("{$base}/admin/realms/{$realm}/clients/{$mgmtId}/roles")
                 ->json();
-
             $adminRole = collect($rolesData)->firstWhere('name', 'realm-admin');
 
             if ($adminRole) {
@@ -176,7 +171,7 @@ class SuperRealmController extends Controller
 
         DomainRealmMap::where('domain', $realm)->update(['mailcow_enabled' => $mailcowEnabled]);
 
-        // 7. Set up broker-realm federation if broker realm is configured
+        // 7. Set up broker-realm federation
         $brokerRealm = config('keycloak.broker_realm');
         if ($brokerRealm) {
             $this->setupBrokerFederation($base, $token, $realm, $brokerRealm);
@@ -189,7 +184,6 @@ class SuperRealmController extends Controller
 
     private function setupBrokerFederation(string $base, string $token, string $realm, string $brokerRealm): void
     {
-        // Step 1: Create a confidential client in the new realm for the broker to connect with
         $clientRes = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/clients", [
             'clientId'                  => 'broker-realm-client',
             'enabled'                   => true,
@@ -201,14 +195,12 @@ class SuperRealmController extends Controller
 
         if ($clientRes->failed()) return;
 
-        // Step 2: Fetch the internal client UUID and its secret
         $clientId  = basename($clientRes->header('Location'));
         $secretRes = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients/{$clientId}/client-secret");
         $secret    = $secretRes->json()['value'] ?? null;
 
         if (!$secret) return;
 
-        // Step 3: Create the Identity Provider in broker-realm pointing to the new realm
         $idpRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances", [
             'alias'                     => $realm,
             'displayName'               => $realm,
@@ -217,28 +209,26 @@ class SuperRealmController extends Controller
             'trustEmail'                => true,
             'firstBrokerLoginFlowAlias' => 'first broker login',
             'config' => [
-                'clientId'                => 'broker-realm-client',
-                'clientSecret'            => $secret,
-                'authorizationUrl'        => "{$base}/realms/{$realm}/protocol/openid-connect/auth",
-                'tokenUrl'                => "{$base}/realms/{$realm}/protocol/openid-connect/token",
-                'jwksUrl'                 => "{$base}/realms/{$realm}/protocol/openid-connect/certs",
-                'logoutUrl'               => "{$base}/realms/{$realm}/protocol/openid-connect/logout",
-                'userInfoUrl'             => "{$base}/realms/{$realm}/protocol/openid-connect/userinfo",
-                'issuer'                  => "{$base}/realms/{$realm}",
-                'validateSignature'       => 'true',
-                'useJwksUrl'              => 'true',
-                'pkceEnabled'             => 'false',
-                'syncMode'                => 'IMPORT',
+                'clientId'         => 'broker-realm-client',
+                'clientSecret'     => $secret,
+                'authorizationUrl' => "{$base}/realms/{$realm}/protocol/openid-connect/auth",
+                'tokenUrl'         => "{$base}/realms/{$realm}/protocol/openid-connect/token",
+                'jwksUrl'          => "{$base}/realms/{$realm}/protocol/openid-connect/certs",
+                'logoutUrl'        => "{$base}/realms/{$realm}/protocol/openid-connect/logout",
+                'userInfoUrl'      => "{$base}/realms/{$realm}/protocol/openid-connect/userinfo",
+                'issuer'           => "{$base}/realms/{$realm}",
+                'validateSignature' => 'true',
+                'useJwksUrl'       => 'true',
+                'pkceEnabled'      => 'false',
+                'syncMode'         => 'IMPORT',
             ],
         ]);
 
         if ($idpRes->failed()) return;
 
-        // Step 4: Add email mapper to the IDP so email claim flows through to broker-realm
-        $idpAlias = $realm;
-        \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$idpAlias}/mappers", [
+        \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers", [
             'name'                   => 'email',
-            'identityProviderAlias'  => $idpAlias,
+            'identityProviderAlias'  => $realm,
             'identityProviderMapper' => 'oidc-user-attribute-idp-mapper',
             'config' => [
                 'syncMode'       => 'INHERIT',
@@ -250,9 +240,8 @@ class SuperRealmController extends Controller
 
     public function toggle(string $realm)
     {
-        $base  = $this->baseUrl();
-        $token = $this->adminToken();
-
+        $base    = $this->baseUrl();
+        $token   = $this->adminToken();
         $current = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}")->json();
         $enabled = !($current['enabled'] ?? false);
 
@@ -275,11 +264,8 @@ class SuperRealmController extends Controller
 
         $apiBase = rtrim(config('mailcow.url'), '/') . '/api/v1';
         $headers = ['X-API-Key' => config('mailcow.api_key'), 'Accept' => 'application/json'];
-
-        $res = \Http::withHeaders($headers)->get("{$apiBase}/get/domain/{$realm}");
-
-        // Mailcow returns the domain object if found, or an empty array / 404 if not
-        $exists = $res->successful() && !empty($res->json()) && !isset($res->json()['type']);
+        $res     = \Http::withHeaders($headers)->get("{$apiBase}/get/domain/{$realm}");
+        $exists  = $res->successful() && !empty($res->json()) && !isset($res->json()['type']);
 
         return response()->json(['exists' => $exists]);
     }
@@ -306,14 +292,12 @@ class SuperRealmController extends Controller
             return redirect()->route('super.realms')->with('success', "Mailcow domain '{$realm}' removed.");
         }
 
-        // Link only — domain already exists in Mailcow, just update the DB
         if ($request->boolean('link_only')) {
             $map->update(['mailcow_enabled' => true]);
             AuditLogger::log('mailcow.linked', $realm);
             return redirect()->route('super.realms')->with('success', "Mailcow domain '{$realm}' linked.");
         }
 
-        // Create the domain in Mailcow
         $res = \Http::withHeaders($headers)->post("{$apiBase}/add/domain", [
             'domain'       => $realm,
             'active'       => '1',
