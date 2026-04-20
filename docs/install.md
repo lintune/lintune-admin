@@ -33,9 +33,7 @@ Edit `.env` and fill in the required values:
 | `DB_HOST` / `DB_DATABASE` / `DB_USERNAME` / `DB_PASSWORD` | MySQL connection details |
 | `KEYCLOAK_BASE_URL` | Public URL of your Keycloak instance |
 | `KEYCLOAK_CLIENT_ID` | Client ID used in tenant realms (default: `lintune-frontend`) |
-| `FRONTEND_URL` | Public URL of lintune-dash |
-| `MAILCOW_URL` | Mailcow base URL |
-| `MAILCOW_API_KEY` | Mailcow API key |
+| `DASH_URL` | Public URL of lintune-dash |
 
 > `KEYCLOAK_ADMIN_CLIENT_SECRET`, `KEYCLOAK_BROKER_REALM`, `KEYCLOAK_ADMIN_USER`, `KEYCLOAK_ADMIN_PASSWORD` and `SETUP_COMPLETE` are all written automatically by the setup page. Do not set them manually.
 

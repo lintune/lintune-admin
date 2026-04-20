@@ -59,6 +59,22 @@
         </div>
       </div>
 
+      <hr />
+      <h6 class="text-muted mb-3">Nextcloud</h6>
+      <div class="mb-3">
+        <label class="form-label">Nextcloud URL</label>
+        <input type="url" name="nextcloud_url" class="form-control" value="{{ old('nextcloud_url', $nextcloud_url) }}" placeholder="https://cloud.yourdomain.com" />
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Service account username</label>
+        <input type="text" name="nextcloud_user" class="form-control" value="{{ old('nextcloud_user', $nextcloud_user ?: 'lintune-service') }}" />
+      </div>
+      <div class="mb-4">
+        <label class="form-label">Service account app password</label>
+        <input type="text" name="nextcloud_password" class="form-control" value="{{ old('nextcloud_password', $nextcloud_password) }}" placeholder="Leave blank to keep current" />
+        <small class="text-muted">Stored encrypted. Generate this in Nextcloud under Settings → Security → App passwords.</small>
+      </div>
+
       <button type="submit" class="btn btn-primary">Save Settings</button>
     </form>
   </div>
