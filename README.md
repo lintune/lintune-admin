@@ -83,7 +83,7 @@ If the service account is ever deleted or its password changed, set `SETUP_COMPL
 
 ## Installation
 
-See [docs/install.md](docs/install.md).
+See [docs/install.md](docs/install.md) for installation instructions and [docs/architecture.md](docs/architecture.md) for a full overview of the repository structure and deployment paths.
 
 ## Roadmap
 
