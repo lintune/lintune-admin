@@ -106,6 +106,7 @@ The platform is being built incrementally. Contributions and ideas are welcome.
   - Provisioning status tracked per server (`provisioning`, `active`, `failed`) with full log history
   - SSH credentials (host, user, private key) stored encrypted in the DB
   - Goal: the only manual step is running the bootstrap script to install lintune-admin itself — everything else is managed through the UI
+- [ ] **ISPConfig integration** — provision a per-tenant web hosting account via the ISPConfig API on realm creation. Creates an ISPConfig client, website and FTP account scoped to the tenant domain. FTP credentials are emailed to the tenant admin. Tenants never access the ISPConfig dashboard directly. ISPConfig is installed without its email module (Mailcow handles email). Optional MySQL database creation per realm manageable via lintune-admin. ISPConfig DNS module is skipped — Cloudflare handles DNS
 - [ ] **Vaultwarden integration** — provision a per-tenant Vaultwarden organisation on realm creation, allowing users to share passwords securely within their organisation. Tenant admins manage organisation membership via lintune-dash. Replaces LastPass / 1Password for MSP-managed customers on a fully self-hosted stack
 - [ ] **Headscale integration** — per-tenant managed VPN mesh so MSPs can offer secure remote access to workstations without opening firewall ports
 - [ ] **Tenant billing / usage overview** — per-realm user count, mailbox count, storage usage in one view for MSP billing purposes
