@@ -9,6 +9,7 @@ Lintune Admin is the super admin portal for the Lintune platform — an open-sou
 | [Keycloak](https://www.keycloak.org/) | Identity provider — realms, users, SSO |
 | [Mailcow](https://mailcow.email/) | Email server — domains, mailboxes |
 | Nextcloud *(planned)* | File storage & collaboration |
+| Vaultwarden *(planned)* | Password manager — per-tenant organisations |
 | PowerDNS / Cloudflare *(planned)* | DNS management — zones, records |
 | SSSD / Keycloak LDAP *(planned)* | Workstation login — Linux & Windows |
 
@@ -96,6 +97,7 @@ The platform is being built incrementally. Contributions and ideas are welcome.
 - [ ] **Welcome email on realm creation** — send a welcome email to the initial admin user when a realm is provisioned. Sender is configurable in platform settings (e.g. `noreply@msp.com`), falling back to the logged-in super admin's email. MSP sender email is stored in the `settings` table and shared with lintune-dash for fallback use
 - [ ] **DNS integration** — auto-create DNS zones per tenant domain and seed MX, SPF, DKIM and DMARC records on realm creation. Supports **PowerDNS** (self-hosted) and **Cloudflare** (managed DNS)
 - [ ] **Workstation login** — expose a read-only, realm-scoped Keycloak LDAP endpoint per tenant so workstations (Linux via SSSD, Windows via Kerberos) can authenticate against the same user directory without Active Directory
+- [ ] **Vaultwarden integration** — provision a per-tenant Vaultwarden organisation on realm creation, allowing users to share passwords securely within their organisation. Tenant admins manage organisation membership via lintune-dash. Replaces LastPass / 1Password for MSP-managed customers on a fully self-hosted stack
 - [ ] **Headscale integration** — per-tenant managed VPN mesh so MSPs can offer secure remote access to workstations without opening firewall ports
 - [ ] **Tenant billing / usage overview** — per-realm user count, mailbox count, storage usage in one view for MSP billing purposes
 - [ ] **Bulk onboarding** — import multiple tenants from CSV
