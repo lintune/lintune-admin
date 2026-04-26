@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Super;
 
 use App\Http\Controllers\Controller;
 use App\Models\DomainRealmMap;
+use App\Models\Mailbox;
+use App\Models\NextcloudUser;
 use App\Models\RealmConfig;
 use App\Models\Setting;
 use App\Services\AuditLogger;
@@ -49,23 +51,64 @@ class SuperRealmController extends Controller
         return rtrim($url, '/') . '/api/v1';
     }
 
+    private function nextcloudBase(?string $realm = null): string
+    {
+        $url = $realm
+            ? (RealmConfig::get($realm, 'nextcloud.url') ?? Setting::get('nextcloud.url', ''))
+            : Setting::get('nextcloud.url', '');
+        return rtrim($url, '/') . '/ocs/v1.php';
+    }
+
+    private function nextcloudAuth(?string $realm = null): array
+    {
+        $user = $realm
+            ? (RealmConfig::get($realm, 'nextcloud.service_user') ?? Setting::get('nextcloud.service_user', ''))
+            : Setting::get('nextcloud.service_user', '');
+        $pass = $realm
+            ? (RealmConfig::get($realm, 'nextcloud.service_password') ?? Setting::get('nextcloud.service_password', ''))
+            : Setting::get('nextcloud.service_password', '');
+        return [$user, $pass];
+    }
+
     public function index()
     {
-        $response = \Http::withToken($this->adminToken())
-            ->get("{$this->baseUrl()}/admin/realms");
+        $base  = $this->baseUrl();
+        $token = $this->adminToken();
+
+        $response = \Http::withToken($token)->get("{$base}/admin/realms");
 
         $realms = $response->successful() ? $response->json() : [];
 
         $systemRealms = ['master', config('keycloak.broker_realm')];
         $realms = array_values(array_filter($realms, fn($r) => !in_array($r['realm'], $systemRealms)));
 
-        $domainMaps = DomainRealmMap::whereIn('realm', array_column($realms, 'realm'))
-            ->pluck('mailcow_enabled', 'realm');
+        $realmNames = array_column($realms, 'realm');
+        $domainMaps = DomainRealmMap::whereIn('realm', $realmNames)->get()->keyBy('realm');
 
-        return view('super.realms', compact('realms', 'domainMaps'))->with(
-            'mailcowConfigured',
-            (bool) Setting::get('mailcow.url', config('mailcow.url'))
-        );
+        // Keycloak user counts — one API call per realm (unavoidable)
+        $keycloakCounts = [];
+        foreach ($realmNames as $r) {
+            $res = \Http::withToken($token)->get("{$base}/admin/realms/{$r}/users/count");
+            $keycloakCounts[$r] = $res->successful() ? (int) $res->body() : 0;
+        }
+
+        // DB counts
+        $mailboxCounts  = Mailbox::whereIn('realm', $realmNames)
+            ->selectRaw('realm, count(*) as total')->groupBy('realm')
+            ->pluck('total', 'realm');
+        $nextcloudCounts = NextcloudUser::whereIn('realm', $realmNames)
+            ->selectRaw('realm, count(*) as total')->groupBy('realm')
+            ->pluck('total', 'realm');
+
+        return view('super.realms', [
+            'realms'             => $realms,
+            'domainMaps'         => $domainMaps,
+            'keycloakCounts'     => $keycloakCounts,
+            'mailboxCounts'      => $mailboxCounts,
+            'nextcloudCounts'    => $nextcloudCounts,
+            'mailcowConfigured'  => (bool) Setting::get('mailcow.url', config('mailcow.url')),
+            'nextcloudConfigured' => (bool) Setting::get('nextcloud.url'),
+        ]);
     }
 
     public function create()
@@ -89,7 +132,6 @@ class SuperRealmController extends Controller
         $token      = $this->adminToken();
         $dashUrl    = rtrim(config('keycloak.dash_url'), '/');
 
-        // 1. Create realm
         $realmRes = \Http::withToken($token)->post("{$base}/admin/realms", [
             'realm'   => $realm,
             'enabled' => true,
@@ -99,7 +141,6 @@ class SuperRealmController extends Controller
             return back()->withErrors(['realm' => 'Failed to create realm: ' . $realmRes->body()]);
         }
 
-        // 2. Create client
         $clientRes = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/clients", [
             'clientId'                  => config('keycloak.client_id'),
             'enabled'                   => true,
@@ -118,7 +159,6 @@ class SuperRealmController extends Controller
             return back()->withErrors(['realm' => 'Realm created but client setup failed: ' . $clientRes->body()]);
         }
 
-        // 3. Create first admin user
         $userRes = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/users", [
             'username'      => $adminEmail,
             'email'         => $adminEmail,
@@ -137,7 +177,6 @@ class SuperRealmController extends Controller
             return back()->withErrors(['realm' => 'Realm created but user creation failed: ' . $userRes->body()]);
         }
 
-        // 4. Assign realm-admin role
         $userId     = basename($userRes->header('Location'));
         $clients    = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients")->json();
         $mgmtClient = collect($clients)->firstWhere('clientId', 'realm-management');
@@ -146,7 +185,6 @@ class SuperRealmController extends Controller
             $mgmtId    = $mgmtClient['id'];
             $rolesData = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients/{$mgmtId}/roles")->json();
             $adminRole = collect($rolesData)->firstWhere('name', 'realm-admin');
-
             if ($adminRole) {
                 \Http::withToken($token)->post(
                     "{$base}/admin/realms/{$realm}/users/{$userId}/role-mappings/clients/{$mgmtId}",
@@ -155,20 +193,17 @@ class SuperRealmController extends Controller
             }
         }
 
-        // 5. Insert domain mapping
         DomainRealmMap::updateOrCreate(
             ['domain' => $realm],
-            ['realm'  => $realm, 'mailcow_enabled' => false]
+            ['realm' => $realm, 'mailcow_enabled' => false, 'nextcloud_enabled' => false]
         );
 
-        // 6. Set up broker-realm federation
         $brokerRealm = config('keycloak.broker_realm');
         if ($brokerRealm) {
             $this->setupBrokerFederation($base, $token, $realm, $brokerRealm);
         }
 
         AuditLogger::log('realm.created', $realm);
-
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' created successfully.");
     }
 
@@ -246,6 +281,26 @@ class SuperRealmController extends Controller
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' {$status}.");
     }
 
+    public function updateLimits(Request $request, string $realm)
+    {
+        $request->validate([
+            'max_users'           => 'nullable|integer|min:1',
+            'max_mailbox_users'   => 'nullable|integer|min:0',
+            'max_nextcloud_users' => 'nullable|integer|min:0',
+        ]);
+
+        DomainRealmMap::where('realm', $realm)->update([
+            'max_users'           => $request->max_users ?: null,
+            'max_mailbox_users'   => $request->max_mailbox_users ?: null,
+            'max_nextcloud_users' => $request->max_nextcloud_users ?: null,
+        ]);
+
+        AuditLogger::log('realm.limits_updated', $realm);
+        return redirect()->route('super.realms')->with('success', "User limits updated for '{$realm}'.");
+    }
+
+    // ── Mailcow ──────────────────────────────────────────────────────────────
+
     public function mailcowSettings(string $realm)
     {
         $map    = DomainRealmMap::where('realm', $realm)->firstOrFail();
@@ -263,21 +318,33 @@ class SuperRealmController extends Controller
             'exists'          => $exists,
             'mailboxes'       => $domain['max_num_mboxes_for_domain'] ?? Setting::get('mailcow.default_mailboxes', 10),
             'aliases'         => $domain['max_num_aliases_for_domain'] ?? Setting::get('mailcow.default_aliases', 10),
-            'maxquota'        => isset($domain['max_quota_for_mbox']) ? (int) round($domain['max_quota_for_mbox'] / 1048576) : (int) Setting::get('mailcow.default_maxquota', 10240),
-            'quota'           => isset($domain['max_quota_for_domain']) ? (int) round($domain['max_quota_for_domain'] / 1048576) : (int) Setting::get('mailcow.default_quota', 102400),
+            'maxquota'        => isset($domain['max_quota_for_mbox']) ? round($domain['max_quota_for_mbox'] / 1073741824, 2) : round(Setting::get('mailcow.default_maxquota', 10240) / 1024, 2),
+            'quota'           => isset($domain['max_quota_for_domain']) ? round($domain['max_quota_for_domain'] / 1073741824, 2) : round(Setting::get('mailcow.default_quota', 102400) / 1024, 2),
+            'custom_url'      => RealmConfig::get($realm, 'mailcow.url') ?? '',
+            'custom_api_key'  => RealmConfig::get($realm, 'mailcow.api_key') ? '••••••••' : '',
         ]);
     }
 
     public function updateMailcowLimits(Request $request, string $realm)
     {
         $request->validate([
-            'mailboxes' => 'required|integer|min:1',
-            'aliases'   => 'required|integer|min:0',
-            'maxquota'  => 'required|integer|min:1',
-            'quota'     => 'required|integer|min:1',
-            'enabled'   => 'required|boolean',
-            'exists'    => 'required|boolean',
+            'mailboxes'      => 'required|integer|min:1',
+            'aliases'        => 'required|integer|min:0',
+            'maxquota'       => 'required|numeric|min:0.1',
+            'quota'          => 'required|numeric|min:0.1',
+            'enabled'        => 'required|boolean',
+            'exists'         => 'required|boolean',
+            'custom_url'     => 'nullable|url',
+            'custom_api_key' => 'nullable|string',
         ]);
+
+        // Save custom URL/key overrides if provided
+        if ($request->filled('custom_url')) {
+            RealmConfig::set($realm, 'mailcow.url', rtrim($request->custom_url, '/'));
+        }
+        if ($request->filled('custom_api_key') && $request->custom_api_key !== '••••••••') {
+            RealmConfig::set($realm, 'mailcow.api_key', $request->custom_api_key, true);
+        }
 
         $map     = DomainRealmMap::where('realm', $realm)->firstOrFail();
         $payload = [
@@ -286,8 +353,8 @@ class SuperRealmController extends Controller
             'restart_sogo' => '1',
             'mailboxes'    => $request->mailboxes,
             'aliases'      => $request->aliases,
-            'maxquota'     => $request->maxquota,
-            'quota'        => $request->quota,
+            'maxquota'     => (int) round($request->maxquota * 1024),
+            'quota'        => (int) round($request->quota * 1024),
         ];
 
         if (!$request->boolean('exists')) {
@@ -295,9 +362,11 @@ class SuperRealmController extends Controller
             if ($res->failed() || ($res->json()[0]['type'] ?? '') === 'error') {
                 return back()->withErrors(['realm' => 'Mailcow error: ' . ($res->json()[0]['msg'] ?? $res->body())]);
             }
-            // Snapshot which Mailcow server this realm was provisioned on
-            RealmConfig::set($realm, 'mailcow.url', Setting::get('mailcow.url', config('mailcow.url')));
-            RealmConfig::set($realm, 'mailcow.api_key', Setting::get('mailcow.api_key', config('mailcow.api_key')), true);
+            // Snapshot server if no custom URL was set
+            if (!$request->filled('custom_url')) {
+                RealmConfig::set($realm, 'mailcow.url', Setting::get('mailcow.url', config('mailcow.url')));
+                RealmConfig::set($realm, 'mailcow.api_key', Setting::get('mailcow.api_key', config('mailcow.api_key')), true);
+            }
             AuditLogger::log('mailcow.created', $realm);
         } else {
             $res = \Http::withHeaders($this->mailcowHeaders($realm))->post("{$this->mailcowBase($realm)}/edit/domain", [
@@ -327,6 +396,104 @@ class SuperRealmController extends Controller
         return redirect()->route('super.realms')->with('success', "Mailcow domain '{$realm}' removed.");
     }
 
+    // ── Nextcloud ─────────────────────────────────────────────────────────────
+
+    public function nextcloudSettings(string $realm)
+    {
+        $map = DomainRealmMap::where('realm', $realm)->firstOrFail();
+
+        [$user, $pass] = $this->nextcloudAuth($realm);
+        $base  = $this->nextcloudBase($realm);
+        $exists = false;
+
+        if ($base && $user && $pass) {
+            $res    = \Http::withBasicAuth($user, $pass)
+                ->withHeaders(['OCS-APIRequest' => 'true', 'Accept' => 'application/json'])
+                ->get("{$base}/cloud/groups/{$realm}");
+            $exists = ($res->json()['ocs']['meta']['statuscode'] ?? 0) === 100;
+        }
+
+        return response()->json([
+            'nextcloud_enabled'   => (bool) $map->nextcloud_enabled,
+            'exists'              => $exists,
+            'custom_url'          => RealmConfig::get($realm, 'nextcloud.url') ?? '',
+            'custom_service_user' => RealmConfig::get($realm, 'nextcloud.service_user') ?? '',
+            'default_quota'       => Setting::get('nextcloud.default_quota', 10),
+            'max_users'           => $map->max_users,
+            'max_mailbox_users'   => $map->max_mailbox_users,
+            'max_nextcloud_users' => $map->max_nextcloud_users,
+        ]);
+    }
+
+    public function updateNextcloud(Request $request, string $realm)
+    {
+        $request->validate([
+            'enabled'               => 'required|boolean',
+            'exists'                => 'required|boolean',
+            'custom_url'            => 'nullable|url',
+            'custom_service_user'   => 'nullable|string|max:255',
+            'custom_service_password' => 'nullable|string',
+        ]);
+
+        if ($request->filled('custom_url')) {
+            RealmConfig::set($realm, 'nextcloud.url', rtrim($request->custom_url, '/'));
+        }
+        if ($request->filled('custom_service_user')) {
+            RealmConfig::set($realm, 'nextcloud.service_user', trim($request->custom_service_user));
+        }
+        if ($request->filled('custom_service_password')) {
+            RealmConfig::set($realm, 'nextcloud.service_password', $request->custom_service_password, true);
+        }
+
+        $map = DomainRealmMap::where('realm', $realm)->firstOrFail();
+
+        if (!$request->boolean('exists')) {
+            [$user, $pass] = $this->nextcloudAuth($realm);
+            $base = $this->nextcloudBase($realm);
+
+            $res = \Http::withBasicAuth($user, $pass)
+                ->withHeaders(['OCS-APIRequest' => 'true', 'Accept' => 'application/json'])
+                ->post("{$base}/cloud/groups", ['groupid' => $realm]);
+
+            if (($res->json()['ocs']['meta']['statuscode'] ?? 0) !== 100) {
+                $msg = $res->json()['ocs']['meta']['message'] ?? $res->body();
+                return back()->withErrors(['realm' => "Nextcloud error: {$msg}"]);
+            }
+
+            if (!$request->filled('custom_url')) {
+                RealmConfig::set($realm, 'nextcloud.url', Setting::get('nextcloud.url', ''));
+            }
+
+            AuditLogger::log('nextcloud.created', $realm);
+        }
+
+        $map->update(['nextcloud_enabled' => $request->boolean('enabled')]);
+        AuditLogger::log('nextcloud.settings_updated', $realm);
+        return redirect()->route('super.realms')->with('success', "Nextcloud settings saved for '{$realm}'.");
+    }
+
+    public function removeNextcloud(string $realm)
+    {
+        [$user, $pass] = $this->nextcloudAuth($realm);
+        $base = $this->nextcloudBase($realm);
+
+        $res = \Http::withBasicAuth($user, $pass)
+            ->withHeaders(['OCS-APIRequest' => 'true', 'Accept' => 'application/json'])
+            ->delete("{$base}/cloud/groups/{$realm}");
+
+        if (($res->json()['ocs']['meta']['statuscode'] ?? 0) !== 100) {
+            $msg = $res->json()['ocs']['meta']['message'] ?? $res->body();
+            return back()->withErrors(['realm' => "Failed to remove Nextcloud group: {$msg}"]);
+        }
+
+        DomainRealmMap::where('realm', $realm)->update(['nextcloud_enabled' => false]);
+        NextcloudUser::where('realm', $realm)->delete();
+        AuditLogger::log('nextcloud.removed', $realm);
+        return redirect()->route('super.realms')->with('success', "Nextcloud group for '{$realm}' removed.");
+    }
+
+    // ── Realm delete ──────────────────────────────────────────────────────────
+
     public function destroy(Request $request, string $realm)
     {
         $res = \Http::withToken($this->adminToken())->delete("{$this->baseUrl()}/admin/realms/{$realm}");
@@ -339,7 +506,7 @@ class SuperRealmController extends Controller
         AuditLogger::log('realm.deleted', $realm, $request->boolean('delete_mailcow') ? 'Mailcow domain also deleted' : null);
 
         if ($request->boolean('delete_mailcow') && Setting::get('mailcow.url', config('mailcow.url')) && Setting::get('mailcow.api_key', config('mailcow.api_key'))) {
-            \Http::withHeaders($this->mailcowHeaders())->post("{$this->mailcowBase()}/delete/domain", [$realm]);
+            \Http::withHeaders($this->mailcowHeaders($realm))->post("{$this->mailcowBase($realm)}/delete/domain", [$realm]);
         }
 
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' deleted.");

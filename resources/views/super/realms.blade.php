@@ -28,25 +28,53 @@
         <thead>
           <tr>
             <th>Realm</th>
-            <th>Display Name</th>
             <th>Status</th>
+            <th>Users</th>
             @if($mailcowConfigured)<th>Mailcow</th>@endif
+            @if($nextcloudConfigured)<th>Nextcloud</th>@endif
             <th></th>
           </tr>
         </thead>
         <tbody>
           @foreach ($realms as $realm)
           @php
-            $enabled        = $realm['enabled'] ?? false;
-            $mailcowEnabled = $domainMaps[$realm['realm']] ?? false;
+            $enabled          = $realm['enabled'] ?? false;
+            $map              = $domainMaps[$realm['realm']] ?? null;
+            $mailcowEnabled   = $map?->mailcow_enabled ?? false;
+            $nextcloudEnabled = $map?->nextcloud_enabled ?? false;
+            $maxUsers         = $map?->max_users;
+            $maxMailbox       = $map?->max_mailbox_users;
+            $maxNextcloud     = $map?->max_nextcloud_users;
+            $kcCount          = $keycloakCounts[$realm['realm']] ?? 0;
+            $mbCount          = $mailboxCounts[$realm['realm']] ?? 0;
+            $ncCount          = $nextcloudCounts[$realm['realm']] ?? 0;
           @endphp
           <tr>
-            <td>{{ $realm['realm'] }}</td>
-            <td>{{ $realm['displayName'] ?? '–' }}</td>
+            <td>
+              <div>{{ $realm['realm'] }}</div>
+              @if($realm['displayName'] ?? false)
+                <small class="text-muted">{{ $realm['displayName'] }}</small>
+              @endif
+            </td>
             <td>
               <span class="badge text-bg-{{ $enabled ? 'success' : 'secondary' }}">
                 {{ $enabled ? 'Enabled' : 'Disabled' }}
               </span>
+            </td>
+            <td>
+              <small class="text-muted d-block">
+                <i class="bi bi-people me-1"></i>{{ $kcCount }}{{ $maxUsers ? '/'.$maxUsers : '' }}
+              </small>
+              @if($mailcowEnabled)
+              <small class="text-muted d-block">
+                <i class="bi bi-envelope me-1"></i>{{ $mbCount }}{{ $maxMailbox ? '/'.$maxMailbox : '' }}
+              </small>
+              @endif
+              @if($nextcloudEnabled)
+              <small class="text-muted d-block">
+                <i class="bi bi-cloud me-1"></i>{{ $ncCount }}{{ $maxNextcloud ? '/'.$maxNextcloud : '' }}
+              </small>
+              @endif
             </td>
             @if($mailcowConfigured)
             <td>
@@ -58,20 +86,38 @@
               </button>
             </td>
             @endif
+            @if($nextcloudConfigured)
+            <td>
+              <button type="button"
+                class="btn btn-sm {{ $nextcloudEnabled ? 'btn-success' : 'btn-secondary' }}"
+                data-realm="{{ $realm['realm'] }}"
+                data-bs-toggle="modal" data-bs-target="#nextcloudModal">
+                <i class="bi bi-cloud me-1"></i>Nextcloud
+              </button>
+            </td>
+            @endif
             <td class="text-end pe-3">
+              <button type="button" class="btn btn-sm btn-outline-secondary me-1"
+                data-realm="{{ $realm['realm'] }}"
+                data-max-users="{{ $map?->max_users ?? '' }}"
+                data-max-mailbox="{{ $map?->max_mailbox_users ?? '' }}"
+                data-max-nextcloud="{{ $map?->max_nextcloud_users ?? '' }}"
+                data-bs-toggle="modal" data-bs-target="#editRealmModal">
+                <i class="bi bi-pencil"></i>
+              </button>
               <button type="button" class="btn btn-sm {{ $enabled ? 'btn-warning' : 'btn-success' }} me-1"
                 data-action="toggle"
                 data-realm="{{ $realm['realm'] }}"
                 data-enabled="{{ $enabled ? '1' : '0' }}"
                 data-bs-toggle="modal" data-bs-target="#confirmModal">
-                <i class="bi bi-{{ $enabled ? 'pause-circle' : 'play-circle' }} me-1"></i>{{ $enabled ? 'Disable' : 'Enable' }}
+                <i class="bi bi-{{ $enabled ? 'pause-circle' : 'play-circle' }}"></i>
               </button>
               <button type="button" class="btn btn-sm btn-danger"
                 data-action="delete"
                 data-realm="{{ $realm['realm'] }}"
                 data-mailcow-enabled="{{ $mailcowEnabled ? '1' : '0' }}"
                 data-bs-toggle="modal" data-bs-target="#confirmModal">
-                <i class="bi bi-trash me-1"></i>Delete
+                <i class="bi bi-trash"></i>
               </button>
             </td>
           </tr>
@@ -79,6 +125,43 @@
         </tbody>
       </table>
     @endif
+  </div>
+</div>
+
+{{-- Edit realm modal --}}
+<div class="modal fade" id="editRealmModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Edit Realm</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form id="editRealmForm" method="POST">
+        @csrf
+        @method('PUT')
+        <div class="modal-body">
+          <p class="text-muted small mb-3">Leave blank for unlimited.</p>
+          <div class="row g-3">
+            <div class="col-4">
+              <label class="form-label">Max users</label>
+              <input type="number" name="max_users" id="editMaxUsers" class="form-control" min="1" placeholder="∞">
+            </div>
+            <div class="col-4">
+              <label class="form-label">Max mailbox users</label>
+              <input type="number" name="max_mailbox_users" id="editMaxMailbox" class="form-control" min="0" placeholder="∞">
+            </div>
+            <div class="col-4">
+              <label class="form-label">Max Nextcloud users</label>
+              <input type="number" name="max_nextcloud_users" id="editMaxNextcloud" class="form-control" min="0" placeholder="∞">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
   </div>
 </div>
 
@@ -100,36 +183,52 @@
             @method('PUT')
             <input type="hidden" name="exists" id="mailcowExists" value="0">
 
-            <div class="form-check form-switch mb-4">
+            <div class="form-check form-switch mb-3">
               <input class="form-check-input" type="checkbox" name="enabled" id="mailcowEnabled" value="1" role="switch">
               <label class="form-check-label" for="mailcowEnabled">Mailcow enabled for this realm</label>
             </div>
 
-            <div id="mailcowLimits">
-              <h6 class="text-muted mb-3">Domain Limits</h6>
-              <div class="row g-3 mb-3">
-                <div class="col-6">
-                  <label class="form-label small">Mailboxes</label>
-                  <input type="number" name="mailboxes" id="mailcowMailboxes" class="form-control form-control-sm" min="1" required>
-                </div>
-                <div class="col-6">
-                  <label class="form-label small">Aliases</label>
-                  <input type="number" name="aliases" id="mailcowAliases" class="form-control form-control-sm" min="0" required>
-                </div>
-                <div class="col-6">
-                  <label class="form-label small">Max quota per mailbox (MB)</label>
-                  <input type="number" name="maxquota" id="mailcowMaxquota" class="form-control form-control-sm" min="1" required>
-                  <small class="text-muted" id="maxquotaHint"></small>
-                </div>
-                <div class="col-6">
-                  <label class="form-label small">Total domain quota (MB)</label>
-                  <input type="number" name="quota" id="mailcowQuota" class="form-control form-control-sm" min="1" required>
-                  <small class="text-muted" id="quotaHint"></small>
-                </div>
+            <h6 class="text-muted mb-2">Domain Limits</h6>
+            <div class="row g-3 mb-3">
+              <div class="col-6">
+                <label class="form-label small">Mailboxes</label>
+                <input type="number" name="mailboxes" id="mailcowMailboxes" class="form-control form-control-sm" min="1" required>
               </div>
-              <div id="mailcowLowerWarning" class="alert alert-warning d-none">
-                <i class="bi bi-exclamation-triangle-fill me-2"></i>
-                One or more limits are being lowered. This may affect existing mailboxes that exceed the new limits.
+              <div class="col-6">
+                <label class="form-label small">Aliases</label>
+                <input type="number" name="aliases" id="mailcowAliases" class="form-control form-control-sm" min="0" required>
+              </div>
+              <div class="col-6">
+                <label class="form-label small">Max quota per mailbox (GB)</label>
+                <input type="number" name="maxquota" id="mailcowMaxquota" class="form-control form-control-sm" min="0.1" step="0.1" required>
+              </div>
+              <div class="col-6">
+                <label class="form-label small">Total domain quota (GB)</label>
+                <input type="number" name="quota" id="mailcowQuota" class="form-control form-control-sm" min="0.1" step="0.1" required>
+              </div>
+            </div>
+            <div id="mailcowLowerWarning" class="alert alert-warning d-none">
+              <i class="bi bi-exclamation-triangle-fill me-2"></i>
+              One or more limits are being lowered. This may affect existing mailboxes.
+            </div>
+
+            {{-- Advanced --}}
+            <div class="mt-3">
+              <a href="#mailcowAdvanced" data-bs-toggle="collapse" class="text-muted small">
+                <i class="bi bi-chevron-down me-1"></i>Advanced — Server Override
+              </a>
+              <div class="collapse mt-2" id="mailcowAdvanced">
+                <div class="card card-body bg-light border-0 p-3">
+                  <p class="text-muted small mb-2">Leave blank to use the platform default Mailcow server.</p>
+                  <div class="mb-2">
+                    <label class="form-label small">Mailcow URL</label>
+                    <input type="url" name="custom_url" id="mailcowCustomUrl" class="form-control form-control-sm" placeholder="https://mail.custom.com">
+                  </div>
+                  <div>
+                    <label class="form-label small">API Key</label>
+                    <input type="text" name="custom_api_key" id="mailcowCustomApiKey" class="form-control form-control-sm" placeholder="Leave blank to keep current">
+                  </div>
+                </div>
               </div>
             </div>
           </form>
@@ -150,6 +249,75 @@
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
         <button type="submit" form="mailcowForm" class="btn btn-primary" id="mailcowSaveBtn" style="display:none">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{-- Nextcloud modal --}}
+<div class="modal fade" id="nextcloudModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Nextcloud</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div id="nextcloudLoading" class="text-center py-4">
+          <div class="spinner-border spinner-border-sm me-2"></div>Loading...
+        </div>
+        <div id="nextcloudContent" style="display:none">
+          <form id="nextcloudForm" method="POST">
+            @csrf
+            @method('PUT')
+            <input type="hidden" name="exists" id="nextcloudExists" value="0">
+
+            <div class="form-check form-switch mb-3">
+              <input class="form-check-input" type="checkbox" name="enabled" id="nextcloudEnabled" value="1" role="switch">
+              <label class="form-check-label" for="nextcloudEnabled">Nextcloud enabled for this realm</label>
+            </div>
+
+            {{-- Advanced --}}
+            <div class="mt-2">
+              <a href="#nextcloudAdvanced" data-bs-toggle="collapse" class="text-muted small">
+                <i class="bi bi-chevron-down me-1"></i>Advanced — Server Override
+              </a>
+              <div class="collapse mt-2" id="nextcloudAdvanced">
+                <div class="card card-body bg-light border-0 p-3">
+                  <p class="text-muted small mb-2">Leave blank to use the platform default Nextcloud server.</p>
+                  <div class="mb-2">
+                    <label class="form-label small">Nextcloud URL</label>
+                    <input type="url" name="custom_url" id="nextcloudCustomUrl" class="form-control form-control-sm" placeholder="https://cloud.custom.com">
+                  </div>
+                  <div class="mb-2">
+                    <label class="form-label small">Service account username</label>
+                    <input type="text" name="custom_service_user" id="nextcloudCustomUser" class="form-control form-control-sm" placeholder="Leave blank to use platform default">
+                  </div>
+                  <div>
+                    <label class="form-label small">Service account app password</label>
+                    <input type="text" name="custom_service_password" id="nextcloudCustomPassword" class="form-control form-control-sm" placeholder="Leave blank to keep current">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </form>
+
+          <hr>
+          <div id="nextcloudRemoveSection">
+            <p class="text-muted small mb-2">Permanently remove the Nextcloud admin user for this realm. This cannot be undone.</p>
+            <form id="nextcloudRemoveForm" method="POST">
+              @csrf
+              @method('DELETE')
+              <button type="button" class="btn btn-sm btn-outline-danger" id="nextcloudRemoveBtn">
+                <i class="bi bi-trash me-1"></i>Remove Nextcloud user
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" form="nextcloudForm" class="btn btn-primary" id="nextcloudSaveBtn" style="display:none">Save</button>
       </div>
     </div>
   </div>
@@ -178,7 +346,16 @@
 
 @push('scripts')
 <script>
-// Mailcow modal
+// ── Edit realm modal ──────────────────────────────────────────────────────────
+document.getElementById('editRealmModal').addEventListener('show.bs.modal', function (e) {
+  const btn = e.relatedTarget;
+  document.getElementById('editRealmForm').action  = `/super/realms/${btn.dataset.realm}/limits`;
+  document.getElementById('editMaxUsers').value    = btn.dataset.maxUsers || '';
+  document.getElementById('editMaxMailbox').value  = btn.dataset.maxMailbox || '';
+  document.getElementById('editMaxNextcloud').value = btn.dataset.maxNextcloud || '';
+});
+
+// ── Mailcow modal ─────────────────────────────────────────────────────────────
 let mailcowOriginal = {};
 
 document.getElementById('mailcowModal').addEventListener('show.bs.modal', function (e) {
@@ -189,7 +366,7 @@ document.getElementById('mailcowModal').addEventListener('show.bs.modal', functi
   document.getElementById('mailcowSaveBtn').style.display = 'none';
   document.getElementById('mailcowLowerWarning').classList.add('d-none');
 
-  document.getElementById('mailcowForm').action = `/super/realms/${realm}/mailcow-limits`;
+  document.getElementById('mailcowForm').action       = `/super/realms/${realm}/mailcow-limits`;
   document.getElementById('mailcowRemoveForm').action = `/super/realms/${realm}/mailcow`;
 
   fetch(`/super/realms/${realm}/mailcow-settings`, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -197,38 +374,26 @@ document.getElementById('mailcowModal').addEventListener('show.bs.modal', functi
     .then(data => {
       mailcowOriginal = { mailboxes: data.mailboxes, aliases: data.aliases, maxquota: data.maxquota, quota: data.quota };
 
-      document.getElementById('mailcowExists').value      = data.exists ? '1' : '0';
-      document.getElementById('mailcowEnabled').checked   = data.mailcow_enabled;
-      document.getElementById('mailcowMailboxes').value   = data.mailboxes;
-      document.getElementById('mailcowAliases').value     = data.aliases;
-      document.getElementById('mailcowMaxquota').value    = data.maxquota;
-      document.getElementById('mailcowQuota').value       = data.quota;
-      document.getElementById('maxquotaHint').textContent = (Math.round(data.maxquota / 1024 * 10) / 10) + ' GB';
-      document.getElementById('quotaHint').textContent    = (Math.round(data.quota / 1024 * 10) / 10) + ' GB';
-
-      // Only show remove section if domain exists in Mailcow
+      document.getElementById('mailcowExists').value       = data.exists ? '1' : '0';
+      document.getElementById('mailcowEnabled').checked    = data.mailcow_enabled;
+      document.getElementById('mailcowMailboxes').value    = data.mailboxes;
+      document.getElementById('mailcowAliases').value      = data.aliases;
+      document.getElementById('mailcowMaxquota').value     = data.maxquota;
+      document.getElementById('mailcowQuota').value        = data.quota;
+      document.getElementById('mailcowCustomUrl').value    = data.custom_url || '';
+      document.getElementById('mailcowCustomApiKey').value = data.custom_api_key || '';
       document.getElementById('mailcowRemoveSection').style.display = data.exists ? '' : 'none';
 
-      document.getElementById('mailcowLoading').style.display  = 'none';
-      document.getElementById('mailcowContent').style.display  = '';
-      document.getElementById('mailcowSaveBtn').style.display  = '';
+      document.getElementById('mailcowLoading').style.display = 'none';
+      document.getElementById('mailcowContent').style.display = '';
+      document.getElementById('mailcowSaveBtn').style.display = '';
     })
     .catch(() => {
       document.getElementById('mailcowLoading').innerHTML = '<div class="alert alert-danger mb-0">Could not load Mailcow settings.</div>';
     });
 });
 
-// Live GB hints + lower warning
-['mailcowMaxquota', 'mailcowQuota'].forEach(function (id) {
-  const input = document.getElementById(id);
-  const hint  = document.getElementById(id === 'mailcowMaxquota' ? 'maxquotaHint' : 'quotaHint');
-  input.addEventListener('input', function () {
-    hint.textContent = (Math.round(this.value / 1024 * 10) / 10) + ' GB';
-    checkLowerWarning();
-  });
-});
-
-['mailcowMailboxes', 'mailcowAliases'].forEach(function (id) {
+['mailcowMailboxes', 'mailcowAliases', 'mailcowMaxquota', 'mailcowQuota'].forEach(id => {
   document.getElementById(id).addEventListener('input', checkLowerWarning);
 });
 
@@ -236,19 +401,54 @@ function checkLowerWarning() {
   const lower =
     parseInt(document.getElementById('mailcowMailboxes').value) < mailcowOriginal.mailboxes ||
     parseInt(document.getElementById('mailcowAliases').value)   < mailcowOriginal.aliases   ||
-    parseInt(document.getElementById('mailcowMaxquota').value)  < mailcowOriginal.maxquota  ||
-    parseInt(document.getElementById('mailcowQuota').value)     < mailcowOriginal.quota;
+    parseFloat(document.getElementById('mailcowMaxquota').value) < mailcowOriginal.maxquota  ||
+    parseFloat(document.getElementById('mailcowQuota').value)    < mailcowOriginal.quota;
   document.getElementById('mailcowLowerWarning').classList.toggle('d-none', !lower);
 }
 
-// Remove button — confirm before submitting
 document.getElementById('mailcowRemoveBtn').addEventListener('click', function () {
   if (confirm('This will permanently delete the domain and all its mailboxes from Mailcow. This cannot be undone. Are you sure?')) {
     document.getElementById('mailcowRemoveForm').submit();
   }
 });
 
-// Confirm modal (toggle realm / delete realm)
+// ── Nextcloud modal ───────────────────────────────────────────────────────────
+document.getElementById('nextcloudModal').addEventListener('show.bs.modal', function (e) {
+  const realm = e.relatedTarget.dataset.realm;
+
+  document.getElementById('nextcloudLoading').style.display = '';
+  document.getElementById('nextcloudContent').style.display = 'none';
+  document.getElementById('nextcloudSaveBtn').style.display = 'none';
+
+  document.getElementById('nextcloudForm').action       = `/super/realms/${realm}/nextcloud`;
+  document.getElementById('nextcloudRemoveForm').action = `/super/realms/${realm}/nextcloud`;
+
+  fetch(`/super/realms/${realm}/nextcloud-settings`, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('nextcloudExists').value        = data.exists ? '1' : '0';
+      document.getElementById('nextcloudEnabled').checked     = data.nextcloud_enabled;
+      document.getElementById('nextcloudCustomUrl').value     = data.custom_url || '';
+      document.getElementById('nextcloudCustomUser').value    = data.custom_service_user || '';
+      document.getElementById('nextcloudCustomPassword').value = '';
+      document.getElementById('nextcloudRemoveSection').style.display = data.exists ? '' : 'none';
+
+      document.getElementById('nextcloudLoading').style.display = 'none';
+      document.getElementById('nextcloudContent').style.display = '';
+      document.getElementById('nextcloudSaveBtn').style.display = '';
+    })
+    .catch(() => {
+      document.getElementById('nextcloudLoading').innerHTML = '<div class="alert alert-danger mb-0">Could not load Nextcloud settings.</div>';
+    });
+});
+
+document.getElementById('nextcloudRemoveBtn').addEventListener('click', function () {
+  if (confirm('This will permanently remove the Nextcloud admin user for this realm. This cannot be undone. Are you sure?')) {
+    document.getElementById('nextcloudRemoveForm').submit();
+  }
+});
+
+// ── Confirm modal ─────────────────────────────────────────────────────────────
 document.getElementById('confirmModal').addEventListener('show.bs.modal', function (e) {
   const btn     = e.relatedTarget;
   const action  = btn.dataset.action;
