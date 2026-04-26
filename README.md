@@ -97,6 +97,15 @@ The platform is being built incrementally. Contributions and ideas are welcome.
 - [ ] **Welcome email on realm creation** — send a welcome email to the initial admin user when a realm is provisioned. Sender is configurable in platform settings (e.g. `noreply@msp.com`), falling back to the logged-in super admin's email. MSP sender email is stored in the `settings` table and shared with lintune-dash for fallback use
 - [ ] **DNS integration** — auto-create DNS zones per tenant domain and seed MX, SPF, DKIM and DMARC records on realm creation. Supports **PowerDNS** (self-hosted) and **Cloudflare** (managed DNS)
 - [ ] **Workstation login** — expose a read-only, realm-scoped Keycloak LDAP endpoint per tenant so workstations (Linux via SSSD, Windows via Kerberos) can authenticate against the same user directory without Active Directory
+- [ ] **Dockerization** — package lintune-admin, lintune-dash and MySQL into a Docker Compose stack for easy deployment. A single bootstrap script installs Docker and starts the full platform on a fresh VPS. The provisioning wizard then manages all other servers from within the stack
+- [ ] **Server provisioning** — SSH-based automated provisioning of new servers via a guided wizard in lintune-admin. Two provisioning types:
+  - **Initial setup** — provision a fresh server with Keycloak + selected services (Mailcow, Nextcloud, Vaultwarden). Configures Keycloak via `kcadm.sh`, sets the admin password, deploys services via Docker Compose, sets up **Caddy** as the reverse proxy with automatic HTTPS via Let's Encrypt, and wires everything into Lintune automatically
+  - **Add service server** — provision an additional Mailcow or Nextcloud instance on a new server, set up Caddy, and register it as an available server in the platform settings, ready to be assigned to new realms
+  - Supports **single-server** (all services on one VPS) and **multi-server** (each service on its own VPS) topologies
+  - Live log output streamed to the browser during provisioning via Laravel Broadcasting
+  - Provisioning status tracked per server (`provisioning`, `active`, `failed`) with full log history
+  - SSH credentials (host, user, private key) stored encrypted in the DB
+  - Goal: the only manual step is running the bootstrap script to install lintune-admin itself — everything else is managed through the UI
 - [ ] **Vaultwarden integration** — provision a per-tenant Vaultwarden organisation on realm creation, allowing users to share passwords securely within their organisation. Tenant admins manage organisation membership via lintune-dash. Replaces LastPass / 1Password for MSP-managed customers on a fully self-hosted stack
 - [ ] **Headscale integration** — per-tenant managed VPN mesh so MSPs can offer secure remote access to workstations without opening firewall ports
 - [ ] **Tenant billing / usage overview** — per-realm user count, mailbox count, storage usage in one view for MSP billing purposes
