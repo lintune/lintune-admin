@@ -89,7 +89,7 @@ See [docs/install.md](docs/install.md).
 The platform is being built incrementally. Contributions and ideas are welcome.
 
 ### In progress
-- [ ] Nextcloud integration — provision a Nextcloud user space per tenant on realm creation
+- [x] Nextcloud integration — provision a Nextcloud user space per tenant on realm creation
 
 ### Planned
 - [x] **Mailcow domain limits** — configurable default limits (mailbox count, alias count, quota per mailbox) stored in a `settings` table and manageable via a platform settings page. Defaults are pre-filled when provisioning a new realm but can be overridden per tenant
@@ -100,6 +100,7 @@ The platform is being built incrementally. Contributions and ideas are welcome.
 - [ ] **Tenant billing / usage overview** — per-realm user count, mailbox count, storage usage in one view for MSP billing purposes
 - [ ] **Bulk onboarding** — import multiple tenants from CSV
 - [ ] **Webhook support** — notify external systems when a realm is created or deleted
+- [ ] **Queueing API calls** — Queue any API calls using the Laravel queue worker
 
 ### On the radar
 These are not yet planned but worth watching as the ecosystem matures:
