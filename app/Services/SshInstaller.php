@@ -28,25 +28,20 @@ class SshInstaller
 
     public function run(string $command): string
     {
-        $cmd = $this->useSudo ? "sudo -n {$command}" : $command;
+        $cmd    = $this->useSudo ? "sudo -n {$command}" : $command;
         $this->emit("$ {$command}");
 
-        $collected = '';
-        $self      = $this;
+        $output = $this->ssh->exec($cmd);
 
-        $this->ssh->exec($cmd, function (string $data) use (&$collected, $self) {
-            $collected .= $data;
-            foreach (explode("\n", $data) as $line) {
-                if (trim($line) !== '') {
-                    $self->emit($line);
-                }
+        foreach (explode("\n", $output) as $line) {
+            if (trim($line) !== '') {
+                $this->emit($line);
             }
-        });
+        }
 
-        return $collected;
+        return $output;
     }
 
-    /** @internal called from closure above */
     public function emit(string $line): void
     {
         $this->log[] = $line;
