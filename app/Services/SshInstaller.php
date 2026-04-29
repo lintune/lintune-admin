@@ -127,7 +127,17 @@ BASH);
     {
         $this->emit('→ Installing Mailcow...');
         $this->execScript(<<<BASH
-which git || (apt-get update -qq && apt-get install -y -qq git)
+# Install missing dependencies (Mailcow requires git, curl, jq, openssl)
+MISSING=""
+for pkg in git curl jq openssl; do
+    command -v "\$pkg" >/dev/null 2>&1 || MISSING="\$MISSING \$pkg"
+done
+if [ -n "\$MISSING" ]; then
+    echo "  Installing missing packages:\$MISSING"
+    apt-get update -qq
+    apt-get install -y -qq \$MISSING
+fi
+
 test -d /opt/mailcow-dockerized || git clone https://github.com/mailcow/mailcow-dockerized /opt/mailcow-dockerized
 cd /opt/mailcow-dockerized
 MAILCOW_HOSTNAME={$hostname} MAILCOW_TZ={$timezone} bash generate_config.sh
