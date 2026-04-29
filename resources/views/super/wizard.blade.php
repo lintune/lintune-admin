@@ -121,6 +121,21 @@
     <form method="POST" action="{{ route('super.wizard.single.install') }}" data-long-running>
       @csrf
 
+      {{-- Keycloak URL --}}
+      <div class="card mb-4 border-primary-subtle">
+        <div class="card-header bg-primary-subtle">
+          <h6 class="mb-0"><i class="bi bi-shield-lock me-2 text-primary"></i>Keycloak</h6>
+        </div>
+        <div class="card-body">
+          <label class="form-label">Keycloak base URL</label>
+          <input type="url" name="keycloak_url" class="form-control"
+                 value="{{ old('keycloak_url', $keycloak_url) }}"
+                 placeholder="https://auth.company.com" required />
+          <div class="form-text">Where your Keycloak instance is running.</div>
+        </div>
+      </div>
+
+      <h6 class="text-muted mb-3">SSH — services to install on this server</h6>
       <div class="mb-3">
         <label class="form-label fw-semibold">Server</label>
         <div class="form-check mb-1">
@@ -198,6 +213,20 @@
     </div>
     <form method="POST" action="{{ route('super.wizard.multi.install') }}" data-long-running>
       @csrf
+
+      {{-- Keycloak URL --}}
+      <div class="card mb-3 border-primary-subtle">
+        <div class="card-header bg-primary-subtle">
+          <h6 class="mb-0"><i class="bi bi-shield-lock me-2 text-primary"></i>Keycloak</h6>
+        </div>
+        <div class="card-body">
+          <label class="form-label">Keycloak base URL</label>
+          <input type="url" name="keycloak_url" class="form-control"
+                 value="{{ old('keycloak_url', $keycloak_url) }}"
+                 placeholder="https://auth.company.com" required />
+          <div class="form-text">Where your Keycloak instance is running.</div>
+        </div>
+      </div>
 
       {{-- Mailcow --}}
       <div class="card mb-3">

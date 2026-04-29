@@ -31,14 +31,20 @@ class WizardController extends Controller
 
     public function singleServer()
     {
-        return view('super.wizard', ['step' => 'single']);
+        return view('super.wizard', [
+            'step'         => 'single',
+            'keycloak_url' => Setting::get('keycloak.url', config('keycloak.base_url', '')),
+        ]);
     }
 
     // ── Step: multi-server form ───────────────────────────────────────────────
 
     public function multiServer()
     {
-        return view('super.wizard', ['step' => 'multi']);
+        return view('super.wizard', [
+            'step'         => 'multi',
+            'keycloak_url' => Setting::get('keycloak.url', config('keycloak.base_url', '')),
+        ]);
     }
 
     // ── Install: single server ────────────────────────────────────────────────
@@ -46,10 +52,13 @@ class WizardController extends Controller
     public function installSingle(Request $request)
     {
         $request->validate([
-            'ssh_host' => 'required|string',
-            'ssh_user' => 'required|string',
-            'ssh_pass' => 'required|string',
+            'keycloak_url' => 'required|url',
+            'ssh_host'     => 'required|string',
+            'ssh_user'     => 'required|string',
+            'ssh_pass'     => 'required|string',
         ]);
+
+        Setting::set('keycloak.url', rtrim($request->keycloak_url, '/'));
 
         set_time_limit(0);
         $log = [];
@@ -80,6 +89,10 @@ class WizardController extends Controller
 
     public function installMulti(Request $request)
     {
+        $request->validate(['keycloak_url' => 'required|url']);
+
+        Setting::set('keycloak.url', rtrim($request->keycloak_url, '/'));
+
         set_time_limit(0);
         $log = [];
 

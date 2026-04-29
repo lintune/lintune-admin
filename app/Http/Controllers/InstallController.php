@@ -75,8 +75,9 @@ class InstallController extends Controller
                 $ssh->installKeycloak($kcAdminPassword);
 
                 // Optional Mailcow on same server
+                $tz = $request->input('mailcow_tz', 'UTC');
                 if ($request->boolean('install_mailcow') && $request->filled('mailcow_hostname')) {
-                    $ssh->installMailcow($request->mailcow_hostname);
+                    $ssh->installMailcow($request->mailcow_hostname, $tz);
                 }
                 // Optional Nextcloud on same server
                 if ($request->boolean('install_nextcloud')) {
@@ -92,10 +93,11 @@ class InstallController extends Controller
                 $log = $ssh->getLog();
 
                 // Optional Mailcow on separate server
-                if ($request->boolean('install_mailcow') && $request->filled('mc_host', 'mailcow_hostname')) {
+                $tz = $request->input('mailcow_tz', 'UTC');
+                if ($request->boolean('install_mailcow') && $request->filled('mc_host') && $request->filled('mailcow_hostname')) {
                     $mcSsh = new SshInstaller($request->mc_host, $request->mc_user, $request->mc_pass);
                     $mcSsh->ensureDocker();
-                    $mcSsh->installMailcow($request->mailcow_hostname);
+                    $mcSsh->installMailcow($request->mailcow_hostname, $tz);
                     $log = array_merge($log, $mcSsh->getLog());
                 }
 
