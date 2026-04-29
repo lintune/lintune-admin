@@ -16,9 +16,9 @@ class SetupComplete
             abort(404);
         }
 
-        // Setup not done — redirect everything except /setup to /setup
+        // Setup not done — redirect everything except /setup (repair mode) to /install
         if (!$complete && !$request->routeIs('super.setup*')) {
-            return redirect()->route('super.setup');
+            return redirect()->route('install.welcome');
         }
 
         return $next($request);

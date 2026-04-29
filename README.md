@@ -89,15 +89,17 @@ See [docs/install.md](docs/install.md) for installation instructions and [docs/a
 
 The platform is being built incrementally. Contributions and ideas are welcome.
 
-### In progress
+### Done
 - [x] Nextcloud integration — provision a Nextcloud user space per tenant on realm creation
+- [x] **Mailcow domain limits** — configurable default limits (mailbox count, alias count, quota per mailbox) stored in a `settings` table and manageable via a platform settings page. Defaults are pre-filled when provisioning a new realm but can be overridden per tenant
+
+### In progress
+- [ ] **Dockerization** — package lintune-admin, lintune-dash and MySQL into a Docker Compose stack for easy deployment. A single bootstrap script installs Docker and starts the full platform on a fresh VPS. The provisioning wizard then manages all other servers from within the stack
 
 ### Planned
-- [x] **Mailcow domain limits** — configurable default limits (mailbox count, alias count, quota per mailbox) stored in a `settings` table and manageable via a platform settings page. Defaults are pre-filled when provisioning a new realm but can be overridden per tenant
 - [ ] **Welcome email on realm creation** — send a welcome email to the initial admin user when a realm is provisioned. Sender is configurable in platform settings (e.g. `noreply@msp.com`), falling back to the logged-in super admin's email. MSP sender email is stored in the `settings` table and shared with lintune-dash for fallback use
 - [ ] **DNS integration** — auto-create DNS zones per tenant domain and seed MX, SPF, DKIM and DMARC records on realm creation. Supports **PowerDNS** (self-hosted) and **Cloudflare** (managed DNS)
 - [ ] **Workstation login** — expose a read-only, realm-scoped Keycloak LDAP endpoint per tenant so workstations (Linux via SSSD, Windows via Kerberos) can authenticate against the same user directory without Active Directory
-- [ ] **Dockerization** — package lintune-admin, lintune-dash and MySQL into a Docker Compose stack for easy deployment. A single bootstrap script installs Docker and starts the full platform on a fresh VPS. The provisioning wizard then manages all other servers from within the stack
 - [ ] **Server provisioning** — SSH-based automated provisioning of new servers via a guided wizard in lintune-admin. Two provisioning types:
   - **Initial setup** — provision a fresh server with Keycloak + selected services (Mailcow, Nextcloud, Vaultwarden). Configures Keycloak via `kcadm.sh`, sets the admin password, deploys services via Docker Compose, sets up **Caddy** as the reverse proxy with automatic HTTPS via Let's Encrypt, and wires everything into Lintune automatically
   - **Add service server** — provision an additional Mailcow or Nextcloud instance on a new server, set up Caddy, and register it as an available server in the platform settings, ready to be assigned to new realms

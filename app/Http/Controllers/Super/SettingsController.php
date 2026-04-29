@@ -12,6 +12,7 @@ class SettingsController extends Controller
     public function show()
     {
         return view('super.settings', [
+            'keycloak_url'       => Setting::get('keycloak.url', config('keycloak.base_url', '')),
             'mailcow_url'        => Setting::get('mailcow.url', config('mailcow.url')),
             'mailcow_api_key'    => Setting::get('mailcow.api_key') ? '••••••••' : '',
             'mailcow_mailboxes'  => Setting::get('mailcow.default_mailboxes', 10),
@@ -28,6 +29,7 @@ class SettingsController extends Controller
     public function update(Request $request)
     {
         $request->validate([
+            'keycloak_url'       => 'required|url',
             'mailcow_url'        => 'required|url',
             'mailcow_api_key'    => 'nullable|string',
             'mailcow_mailboxes'  => 'required|integer|min:1',
@@ -40,6 +42,7 @@ class SettingsController extends Controller
             'nextcloud_quota'    => 'required|numeric|min:0.1',
         ]);
 
+        Setting::set('keycloak.url', rtrim($request->keycloak_url, '/'));
         Setting::set('mailcow.url', rtrim($request->mailcow_url, '/'));
         if ($request->filled('mailcow_api_key') && $request->mailcow_api_key !== '••••••••') {
             Setting::set('mailcow.api_key', $request->mailcow_api_key, true);

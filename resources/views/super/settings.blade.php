@@ -19,6 +19,18 @@
       @csrf
       @method('PUT')
 
+      {{-- Keycloak --}}
+      <h6 class="text-muted mb-3">Keycloak — Connection</h6>
+      <div class="mb-4">
+        <label class="form-label">Base URL</label>
+        <input type="url" name="keycloak_url" class="form-control"
+               value="{{ old('keycloak_url', $keycloak_url) }}"
+               placeholder="https://auth.company.com" required />
+        <small class="text-muted">Changing this takes effect on the next page load. Active sessions remain until they expire.</small>
+      </div>
+
+      <hr />
+
       {{-- Mailcow --}}
       <h6 class="text-muted mb-3">Mailcow — Connection</h6>
       <div class="mb-3">
@@ -79,6 +91,26 @@
 
       <button type="submit" class="btn btn-primary">Save Settings</button>
     </form>
+  </div>
+</div>
+
+<div class="card border-warning mt-4" style="max-width:600px">
+  <div class="card-header text-warning">
+    <h5 class="card-title mb-0"><i class="bi bi-arrow-counterclockwise me-2"></i>Developer Tools</h5>
+  </div>
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between">
+      <div>
+        <strong>Reset first-run wizard</strong>
+        <div class="text-muted small">The wizard will appear again on next login. Useful for testing the setup flow.</div>
+      </div>
+      <form method="POST" action="{{ route('super.wizard.reset') }}" data-no-spinner>
+        @csrf
+        <button type="submit" class="btn btn-sm btn-outline-warning ms-4">
+          <i class="bi bi-arrow-counterclockwise me-1"></i>Reset wizard
+        </button>
+      </form>
+    </div>
   </div>
 </div>
 @endsection

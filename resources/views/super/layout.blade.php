@@ -32,7 +32,7 @@
           </a>
           <ul class="dropdown-menu dropdown-menu-end">
             <li>
-              <form method="POST" action="{{ route('super.logout') }}">
+              <form method="POST" action="{{ route('super.logout') }}" data-no-spinner>
                 @csrf
                 <button type="submit" class="dropdown-item text-danger">
                   <i class="bi bi-box-arrow-right me-2"></i>Sign out
@@ -92,6 +92,12 @@
   </main>
 
 </div>
+
+<div id="loadingOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:1rem">
+  <div class="spinner-border text-light" style="width:3rem;height:3rem"></div>
+  <span class="text-white fw-semibold fs-6">Processing…</span>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/admin-lte@4.0.0-rc2/dist/js/adminlte.min.js" crossorigin="anonymous"></script>
 @stack('scripts')
@@ -163,6 +169,14 @@
     updateDisplay();
     setInterval(updateDisplay, 1000);
     setInterval(refresh, 30000);
+})();
+
+(function () {
+    const overlay = document.getElementById('loadingOverlay');
+    document.addEventListener('submit', function (e) {
+        if (e.target.dataset.noSpinner !== undefined) return;
+        overlay.style.display = 'flex';
+    });
 })();
 </script>
 </body>
