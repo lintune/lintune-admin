@@ -30,11 +30,11 @@
   If the username is not <code>root</code>, <code>sudo</code> will be used automatically.
 </div>
 
-<form method="POST" action="{{ route('install.run') }}" data-long-running>
+<form method="POST" action="{{ route('install.run') }}">
   @csrf
   <input type="hidden" name="server_type" value="{{ $type }}">
 
-  {{-- ── Keycloak section (always present) ──────────────────────────────── --}}
+  {{-- ── Keycloak section ────────────────────────────────────────────────── --}}
   <div class="card shadow-sm mb-4">
     <div class="card-header bg-primary-subtle">
       <h5 class="card-title mb-0">
@@ -44,9 +44,9 @@
     </div>
     <div class="card-body">
       <p class="text-muted small mb-3">
-        Keycloak will be installed on the server below via Docker.
+        Keycloak will be installed via Docker on the server below.
         @if($type === 'single')
-          Lintune will reach it at <code>http://&lt;host&gt;:&lt;port&gt;</code>.
+          It will be reachable at <code>http://&lt;host&gt;:&lt;port&gt;</code> unless you provide a public URL.
         @else
           This can be a separate machine from Mailcow and Nextcloud.
         @endif
@@ -83,7 +83,7 @@
         </div>
       @endif
 
-      <div class="row g-3 mx-0">
+      <div class="row g-3 mx-0 mb-3">
         @if($type === 'single')
           <div class="col-sm-5">
             <label class="form-label">SSH username</label>
@@ -112,10 +112,21 @@
         </div>
       </div>
 
+      <div class="mb-0">
+        <label class="form-label">Public URL <span class="text-muted fw-normal">(optional — if behind a reverse proxy)</span></label>
+        <input type="url" name="kc_public_url" class="form-control"
+               value="{{ old('kc_public_url') }}"
+               placeholder="https://keycloak.company.com" />
+        <div class="form-text">
+          If provided, Keycloak is configured with reverse-proxy headers and <code>KC_HOSTNAME</code> is set to this domain.
+          Leave blank for direct <code>http://ip:port</code> access.
+        </div>
+      </div>
+
       <div class="mt-3 p-2 bg-light rounded small text-muted">
         <i class="bi bi-info-circle me-1"></i>
-        Docker will be installed on this server if not already present.
-        Keycloak runs as a Docker container (start-dev mode — suitable behind a reverse proxy).
+        Docker will be installed automatically if not already present.
+        Keycloak runs as a Docker container (start-dev mode when no public URL is given — suitable for testing or behind a reverse proxy you configure yourself).
       </div>
     </div>
   </div>
@@ -190,26 +201,33 @@
     <div id="ncBody" class="{{ old('install_nextcloud') ? '' : 'd-none' }} card-body">
       <p class="text-muted small mb-3">
         Installs Nextcloud All-in-One via Docker. The AIO admin interface will be
-        available on port 8080 after installation.
+        available on <strong>port 9080</strong> after installation. Nextcloud's web interface
+        runs on port 11000 once fully configured through AIO.
       </p>
-      @if($type === 'multi')
       <div class="row g-3 mx-0">
-        <div class="col-sm-4">
-          <label class="form-label small">Nextcloud server IP</label>
-          <input type="text" name="nc_host" class="form-control form-control-sm"
-                 value="{{ old('nc_host') }}" placeholder="10.0.0.30" />
-        </div>
-        <div class="col-sm-4">
-          <label class="form-label small">SSH username</label>
-          <input type="text" name="nc_user" class="form-control form-control-sm"
-                 value="{{ old('nc_user', 'root') }}" />
-        </div>
-        <div class="col-sm-4">
-          <label class="form-label small">SSH password</label>
-          <input type="password" name="nc_pass" class="form-control form-control-sm" autocomplete="off" />
+        @if($type === 'multi')
+          <div class="col-sm-4">
+            <label class="form-label small">Nextcloud server IP</label>
+            <input type="text" name="nc_host" class="form-control form-control-sm"
+                   value="{{ old('nc_host') }}" placeholder="10.0.0.30" />
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label small">SSH username</label>
+            <input type="text" name="nc_user" class="form-control form-control-sm"
+                   value="{{ old('nc_user', 'root') }}" />
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label small">SSH password</label>
+            <input type="password" name="nc_pass" class="form-control form-control-sm" autocomplete="off" />
+          </div>
+        @endif
+        <div class="col-12">
+          <label class="form-label small">Nextcloud public URL <span class="text-muted fw-normal">(optional)</span></label>
+          <input type="url" name="nc_url" class="form-control form-control-sm"
+                 value="{{ old('nc_url') }}" placeholder="https://cloud.company.com" />
+          <div class="form-text">Saved to settings so Lintune can link to Nextcloud. Leave blank to use <code>http://server:11000</code>.</div>
         </div>
       </div>
-      @endif
     </div>
   </div>
 

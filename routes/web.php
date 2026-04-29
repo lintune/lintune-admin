@@ -20,10 +20,12 @@ Route::prefix('install')->name('install.')->group(function () {
     Route::get('/',           [InstallController::class, 'welcome'])->name('welcome');
     Route::get('/server-type',[InstallController::class, 'serverType'])->name('server-type');
     Route::get('/configure',  [InstallController::class, 'configure'])->name('configure');
-    Route::post('/run',       [InstallController::class, 'run'])->name('run');
-    Route::get('/manual',     [InstallController::class, 'manual'])->name('manual');
-    Route::post('/manual',    [InstallController::class, 'runManual'])->name('manual.run');
-    Route::get('/done',       [InstallController::class, 'done'])->name('done');
+    Route::post('/run',            [InstallController::class, 'run'])->name('run');
+    Route::get('/progress/{key}',  [InstallController::class, 'progress'])->name('progress');
+    Route::get('/stream/{key}',    [InstallController::class, 'stream'])->name('stream');
+    Route::get('/manual',          [InstallController::class, 'manual'])->name('manual');
+    Route::post('/manual',         [InstallController::class, 'runManual'])->name('manual.run');
+    Route::get('/done',            [InstallController::class, 'done'])->name('done');
 });
 
 Route::prefix('super')->name('super.')->middleware(SetupComplete::class)->group(function () {

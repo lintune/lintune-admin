@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(php -l \"c:/laragon/www/lintune-admin/app/Http/Controllers/InstallController.php\")",
+      "Bash(php -l \"c:/laragon/www/lintune-admin/app/Services/SshInstaller.php\")",
+      "Bash(php artisan *)",
+      "Bash(composer require *)"
+    ]
+  }
+}
