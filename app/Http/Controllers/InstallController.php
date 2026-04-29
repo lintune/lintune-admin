@@ -12,7 +12,7 @@ class InstallController extends Controller
     public function __construct()
     {
         if (config('setup.complete')) {
-            abort(redirect()->route('super.login'));
+            abort(404);
         }
     }
 
