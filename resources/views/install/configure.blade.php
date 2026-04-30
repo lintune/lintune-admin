@@ -34,6 +34,29 @@
   @csrf
   <input type="hidden" name="server_type" value="{{ $type }}">
 
+  {{-- ── General settings ────────────────────────────────────────────────── --}}
+  <div class="card shadow-sm mb-4">
+    <div class="card-header">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-gear me-2 text-primary"></i>General settings
+      </h5>
+    </div>
+    <div class="card-body">
+      <div class="row g-3 mx-0">
+        <div class="col-sm-4">
+          <label class="form-label fw-semibold">Timezone</label>
+          <input type="text" name="timezone" class="form-control @error('timezone') is-invalid @enderror"
+                 value="{{ old('timezone', 'UTC') }}"
+                 placeholder="Europe/Amsterdam" required />
+          @error('timezone')
+            <div class="invalid-feedback">{{ $message }}</div>
+          @enderror
+          <div class="form-text">Used for Mailcow, Nextcloud, and other services. Use <a href="https://en.wikipedia.org/wiki/List_of_tz_database_time_zones" target="_blank">tz database name</a> (e.g. <code>Asia/Manila</code>, <code>America/New_York</code>).</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   {{-- ── Keycloak section ────────────────────────────────────────────────── --}}
   <div class="card shadow-sm mb-4">
     <div class="card-header bg-primary-subtle">
@@ -128,6 +151,52 @@
         Docker will be installed automatically if not already present.
         Keycloak runs as a Docker container (start-dev mode when no public URL is given — suitable for testing or behind a reverse proxy you configure yourself).
       </div>
+
+      <hr class="my-4">
+
+      <h6 class="fw-semibold mb-1"><i class="bi bi-person-lock me-2 text-primary"></i>Master realm admin account</h6>
+      <p class="text-muted small mb-3">
+        This account will be created in Keycloak's master realm. You use it to log in to the Keycloak admin UI.
+        Choose a username (no spaces or @ sign) and a strong password — you'll need to remember these.
+      </p>
+
+      <div class="row g-3 mx-0">
+        <div class="col-sm-4">
+          <label class="form-label fw-semibold">Username</label>
+          <input type="text" name="admin_username" class="form-control @error('admin_username') is-invalid @enderror"
+                 value="{{ old('admin_username') }}"
+                 placeholder="operator"
+                 autocomplete="off"
+                 pattern="[a-zA-Z0-9_\-]+" title="Letters, numbers, hyphens and underscores only"
+                 required />
+          @error('admin_username')
+            <div class="invalid-feedback">{{ $message }}</div>
+          @enderror
+          <div class="form-text">Letters, numbers, <code>-</code> and <code>_</code> only.</div>
+        </div>
+        <div class="col-sm-4">
+          <label class="form-label fw-semibold">Password</label>
+          <input type="password" id="adminPassword" name="admin_password"
+                 class="form-control @error('admin_password') is-invalid @enderror"
+                 autocomplete="new-password" required />
+          @error('admin_password')
+            <div class="invalid-feedback">{{ $message }}</div>
+          @enderror
+        </div>
+        <div class="col-sm-4">
+          <label class="form-label fw-semibold">Confirm password</label>
+          <input type="password" id="adminPasswordConfirm" name="admin_password_confirmation"
+                 class="form-control" autocomplete="new-password" required />
+        </div>
+      </div>
+
+      <div class="mt-2 ps-1" id="pwReqs">
+        <small class="text-muted me-3"><span id="req-len">○</span> At least 10 characters</small>
+        <small class="text-muted me-3"><span id="req-upper">○</span> Uppercase letter</small>
+        <small class="text-muted me-3"><span id="req-lower">○</span> Lowercase letter</small>
+        <small class="text-muted me-3"><span id="req-digit">○</span> Number</small>
+        <small class="text-muted"><span id="req-special">○</span> Special character</small>
+      </div>
     </div>
   </div>
 
@@ -174,11 +243,6 @@
                  value="{{ old('mailcow_hostname') }}" placeholder="mail.company.com" />
           <div class="form-text">Must resolve to the Mailcow server's IP.</div>
         </div>
-        <div class="col-sm-6">
-          <label class="form-label small">Timezone</label>
-          <input type="text" name="mailcow_tz" class="form-control form-control-sm"
-                 value="{{ old('mailcow_tz', 'UTC') }}" placeholder="Europe/Amsterdam" />
-        </div>
       </div>
     </div>
   </div>
@@ -194,15 +258,14 @@
         <input class="form-check-input" type="checkbox" role="switch"
                id="nc_enabled" name="install_nextcloud" value="1"
                {{ old('install_nextcloud') ? 'checked' : '' }}
-               onchange="document.getElementById('ncBody').classList.toggle('d-none', !this.checked)">
+               onchange="toggleNcSection(this.checked)">
         <label class="form-check-label" for="nc_enabled">Install</label>
       </div>
     </div>
     <div id="ncBody" class="{{ old('install_nextcloud') ? '' : 'd-none' }} card-body">
       <p class="text-muted small mb-3">
-        Installs Nextcloud All-in-One via Docker. The AIO admin interface will be
-        available on <strong>port 9080</strong> after installation. Nextcloud's web interface
-        runs on port 11000 once fully configured through AIO.
+        Installs Nextcloud All-in-One via Docker and automatically configures the domain and timezone.
+        Nextcloud's web interface runs on the domain you provide once AIO setup completes.
       </p>
       <div class="row g-3 mx-0">
         @if($type === 'multi')
@@ -222,10 +285,13 @@
           </div>
         @endif
         <div class="col-12">
-          <label class="form-label small">Nextcloud public URL <span class="text-muted fw-normal">(optional)</span></label>
-          <input type="url" name="nc_url" class="form-control form-control-sm"
+          <label class="form-label small fw-semibold">Nextcloud public URL <span class="text-danger">*</span></label>
+          <input type="url" id="nc_url" name="nc_url" class="form-control form-control-sm @error('nc_url') is-invalid @enderror"
                  value="{{ old('nc_url') }}" placeholder="https://cloud.company.com" />
-          <div class="form-text">Saved to settings so Lintune can link to Nextcloud. Leave blank to use <code>http://server:11000</code>.</div>
+          @error('nc_url')
+            <div class="invalid-feedback">{{ $message }}</div>
+          @enderror
+          <div class="form-text">Required — used to configure Nextcloud AIO. The domain must point to this server.</div>
         </div>
       </div>
     </div>
@@ -240,6 +306,34 @@
 
 @push('scripts')
 <script>
+(function () {
+  const pw      = document.getElementById('adminPassword');
+  const confirm = document.getElementById('adminPasswordConfirm');
+  const checks  = {
+    'req-len':     v => v.length >= 10,
+    'req-upper':   v => /[A-Z]/.test(v),
+    'req-lower':   v => /[a-z]/.test(v),
+    'req-digit':   v => /\d/.test(v),
+    'req-special': v => /[^a-zA-Z0-9]/.test(v),
+  };
+  pw.addEventListener('input', function () {
+    const v = this.value;
+    for (const [id, fn] of Object.entries(checks)) {
+      const el = document.getElementById(id);
+      const ok = fn(v);
+      el.textContent = ok ? '●' : '○';
+      el.parentElement.classList.toggle('text-success', ok);
+      el.parentElement.classList.toggle('text-muted',   !ok);
+    }
+    if (confirm.value) {
+      confirm.setCustomValidity(confirm.value === v ? '' : 'Passwords do not match.');
+    }
+  });
+  confirm.addEventListener('input', function () {
+    this.setCustomValidity(this.value === pw.value ? '' : 'Passwords do not match.');
+  });
+})();
+
 function toggleHostField(val) {
   const inp  = document.getElementById('customHostInput');
   const self = document.getElementById('ssh_localhost');
@@ -255,6 +349,14 @@ function toggleHostField(val) {
 }
 const sel = document.querySelector('input[name="ssh_host"]:checked');
 if (sel) toggleHostField(sel.value);
+
+function toggleNcSection(enabled) {
+  document.getElementById('ncBody').classList.toggle('d-none', !enabled);
+  const urlField = document.getElementById('nc_url');
+  if (urlField) urlField.required = enabled;
+}
+// Sync required state on page load (e.g. after validation error repopulates the form)
+toggleNcSection(document.getElementById('nc_enabled').checked);
 </script>
 @endpush
 @endsection

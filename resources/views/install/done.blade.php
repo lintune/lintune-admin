@@ -30,6 +30,15 @@
         <td class="text-muted" style="width:160px">Keycloak URL</td>
         <td><code>{{ $kcUrl }}</code></td>
       </tr>
+      @if(!empty($adminUsername))
+      <tr>
+        <td class="text-muted">Master admin</td>
+        <td>
+          <code>{{ $adminUsername }}</code>
+          <span class="text-muted small ms-2">— use this to log in to the Keycloak admin UI</span>
+        </td>
+      </tr>
+      @endif
       <tr>
         <td class="text-muted">Admin client</td>
         <td><code>lintune-admin</code> (created in master realm)</td>

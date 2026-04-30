@@ -46,20 +46,30 @@ class InstallController extends Controller
     {
         $type = $request->input('server_type', 'single');
 
+        $commonRules = [
+            'admin_username' => ['required', 'string', 'alpha_dash', 'min:3', 'max:50'],
+            'admin_password' => [
+                'required', 'string', 'min:10', 'confirmed',
+                'regex:/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^a-zA-Z0-9]).{10,}$/',
+            ],
+            'timezone' => ['required', 'string', 'max:64'],
+            'nc_url'   => ['nullable', 'url', 'required_if:install_nextcloud,1'],
+        ];
+
         if ($type === 'single') {
-            $request->validate([
+            $request->validate(array_merge($commonRules, [
                 'ssh_host' => 'required|string',
                 'ssh_user' => 'required|string',
                 'ssh_pass' => 'required|string',
                 'kc_port'  => 'required|integer|min:1|max:65535',
-            ]);
+            ]));
         } else {
-            $request->validate([
+            $request->validate(array_merge($commonRules, [
                 'kc_host' => 'required|string',
                 'kc_user' => 'required|string',
                 'kc_pass' => 'required|string',
                 'kc_port' => 'required|integer|min:1|max:65535',
-            ]);
+            ]));
         }
 
         $key = Str::uuid()->toString();
@@ -104,7 +114,8 @@ class InstallController extends Controller
 
             $log             = [];
             $type            = $params['server_type'] ?? 'single';
-            $kcAdminPassword = Str::random(24);
+            $kcAdminUsername = $params['admin_username'];
+            $kcAdminPassword = $params['admin_password'];
 
             $cb = function (string $line) use (&$log, $emit) {
                 $log[] = $line;
@@ -125,17 +136,21 @@ class InstallController extends Controller
                     $ssh = new SshInstaller($kcHost, $params['ssh_user'], $params['ssh_pass']);
                     $ssh->setOutputCallback($cb);
                     $ssh->ensureDocker();
-                    $ssh->installKeycloak($kcAdminPassword, $kcPort, $kcHostname);
+                    $ssh->installKeycloak($kcAdminUsername, $kcAdminPassword, $kcPort, $kcHostname);
+
+                    $timezone = $params['timezone'] ?? 'UTC';
 
                     if (!empty($params['install_mailcow']) && !empty($params['mailcow_hostname'])) {
-                        $ssh->installMailcow($params['mailcow_hostname'], $params['mailcow_tz'] ?? 'UTC');
+                        $ssh->installMailcow($params['mailcow_hostname'], $timezone);
                         Setting::set('mailcow.url', "https://{$params['mailcow_hostname']}");
                     }
 
                     if (!empty($params['install_nextcloud'])) {
-                        $ssh->installNextcloud();
-                        $ncUrl = !empty($params['nc_url']) ? rtrim($params['nc_url'], '/') : "http://{$kcHost}:11000";
+                        $ncUrl    = rtrim($params['nc_url'], '/');
+                        $ncDomain = parse_url($ncUrl, PHP_URL_HOST);
+                        $ssh->installNextcloud($ncDomain, $timezone);
                         Setting::set('nextcloud.url', $ncUrl);
+                        $this->saveNcServiceCredentials($ssh, $emit, $log);
                     }
                 } else {
                     $kcHost     = $params['kc_host'] ?? '';
@@ -147,13 +162,15 @@ class InstallController extends Controller
                     $ssh = new SshInstaller($kcHost, $params['kc_user'], $params['kc_pass']);
                     $ssh->setOutputCallback($cb);
                     $ssh->ensureDocker();
-                    $ssh->installKeycloak($kcAdminPassword, $kcPort, $kcHostname);
+                    $ssh->installKeycloak($kcAdminUsername, $kcAdminPassword, $kcPort, $kcHostname);
+
+                    $timezone = $params['timezone'] ?? 'UTC';
 
                     if (!empty($params['install_mailcow']) && !empty($params['mc_host']) && !empty($params['mailcow_hostname'])) {
                         $mcSsh = new SshInstaller($params['mc_host'], $params['mc_user'], $params['mc_pass']);
                         $mcSsh->setOutputCallback($cb);
                         $mcSsh->ensureDocker();
-                        $mcSsh->installMailcow($params['mailcow_hostname'], $params['mailcow_tz'] ?? 'UTC');
+                        $mcSsh->installMailcow($params['mailcow_hostname'], $timezone);
                         Setting::set('mailcow.url', "https://{$params['mailcow_hostname']}");
                     }
 
@@ -161,9 +178,11 @@ class InstallController extends Controller
                         $ncSsh = new SshInstaller($params['nc_host'], $params['nc_user'], $params['nc_pass']);
                         $ncSsh->setOutputCallback($cb);
                         $ncSsh->ensureDocker();
-                        $ncSsh->installNextcloud();
-                        $ncUrl = !empty($params['nc_url']) ? rtrim($params['nc_url'], '/') : "http://{$params['nc_host']}:11000";
+                        $ncUrl    = rtrim($params['nc_url'], '/');
+                        $ncDomain = parse_url($ncUrl, PHP_URL_HOST);
+                        $ncSsh->installNextcloud($ncDomain, $timezone);
                         Setting::set('nextcloud.url', $ncUrl);
+                        $this->saveNcServiceCredentials($ncSsh, $emit, $log);
                     }
                 }
             } catch (\Throwable $e) {
@@ -178,25 +197,28 @@ class InstallController extends Controller
                 ? rtrim($params['kc_public_url'], '/')
                 : $kcInternalUrl;
 
-            // Wait for Keycloak (up to 90 s)
-            $emit('log', ['line' => '→ Waiting for Keycloak to become ready...']);
+            // Wait for Keycloak — up to 5 minutes (start mode is slow; start-dev is faster).
+            // We probe /realms/master which returns 200 on all KC versions once the server
+            // is serving HTTP. The /health/ready endpoint moved to port 9000 in KC 25+.
+            $emit('log', ['line' => '→ Waiting for Keycloak to become ready (up to 5 min)...']);
             $log[] = '→ Waiting for Keycloak to become ready...';
             $ready = false;
             $base  = rtrim($kcInternalUrl, '/');
 
-            for ($i = 0; $i < 45; $i++) {
+            for ($i = 0; $i < 60; $i++) {
                 try {
-                    if (\Http::timeout(3)->get("{$base}/health/ready")->successful()) {
+                    $res = \Http::timeout(4)->get("{$base}/realms/master");
+                    if ($res->status() < 500) {
                         $ready = true;
                         break;
                     }
                 } catch (\Throwable) {}
-                $emit('log', ['line' => "  Attempt " . ($i + 1) . " / 45..."]);
-                sleep(2);
+                $emit('log', ['line' => "  Waiting... attempt " . ($i + 1) . " / 60 (5 s each)"]);
+                sleep(5);
             }
 
             if (!$ready) {
-                $emit('error', ['message' => 'Keycloak installed but did not become ready in 90 s. Check the server and try manual setup.']);
+                $emit('error', ['message' => 'Keycloak installed but did not become ready in 5 min. Check the server and try manual setup.']);
                 return;
             }
 
@@ -204,13 +226,13 @@ class InstallController extends Controller
             $log[] = '  Keycloak is ready.';
 
             try {
-                $this->setupKeycloak($base, $keycloakUrl, $kcAdminPassword, $log, $emit);
+                $this->setupKeycloak($base, $keycloakUrl, $kcAdminUsername, $kcAdminPassword, $log, $emit);
             } catch (\Throwable $e) {
                 $emit('error', ['message' => 'Keycloak configuration failed: ' . $e->getMessage()]);
                 return;
             }
 
-            Cache::put("install_result:{$key}", ['log' => $log, 'kcUrl' => $keycloakUrl], now()->minutes(10));
+            Cache::put("install_result:{$key}", ['log' => $log, 'kcUrl' => $keycloakUrl, 'adminUsername' => $kcAdminUsername], now()->minutes(10));
             $emit('done', ['redirect' => route('install.done') . '?key=' . $key]);
 
         }, 200, [
@@ -273,25 +295,27 @@ class InstallController extends Controller
         $key = $request->query('key');
 
         if ($key && Cache::has("install_result:{$key}")) {
-            $result = Cache::pull("install_result:{$key}");
-            $log    = $result['log'] ?? [];
-            $kcUrl  = $result['kcUrl'] ?? '';
+            $result        = Cache::pull("install_result:{$key}");
+            $log           = $result['log'] ?? [];
+            $kcUrl         = $result['kcUrl'] ?? '';
+            $adminUsername = $result['adminUsername'] ?? '';
         } else {
-            $log   = session('install_log', []);
-            $kcUrl = session('install_kc_url', '');
+            $log           = session('install_log', []);
+            $kcUrl         = session('install_kc_url', '');
+            $adminUsername = '';
         }
 
-        return view('install.done', compact('log', 'kcUrl'));
+        return view('install.done', compact('log', 'kcUrl', 'adminUsername'));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private function setupKeycloak(string $internalBase, string $publicBase, string $adminPassword, array &$log, callable $emit): void
+    private function setupKeycloak(string $internalBase, string $publicBase, string $adminUsername, string $adminPassword, array &$log, callable $emit): void
     {
         $tokenRes = \Http::asForm()->post("{$internalBase}/realms/master/protocol/openid-connect/token", [
             'grant_type' => 'password',
             'client_id'  => 'admin-cli',
-            'username'   => 'admin',
+            'username'   => $adminUsername,
             'password'   => $adminPassword,
         ]);
 
@@ -415,6 +439,22 @@ class InstallController extends Controller
         $msg   = '→ Configuration saved.';
         $log[] = $msg;
         $emit('log', ['line' => $msg]);
+    }
+
+    private function saveNcServiceCredentials(SshInstaller $ssh, callable $emit, array &$log): void
+    {
+        $pass = $ssh->getCaptured('nc_admin_pass');
+        if ($pass) {
+            Setting::set('nextcloud.service_user', 'admin', false);
+            Setting::set('nextcloud.service_password', $pass, true);
+            $msg   = '  Nextcloud service credentials saved (user: admin).';
+            $log[] = $msg;
+            $emit('log', ['line' => $msg]);
+        } else {
+            $msg   = '  Nextcloud admin password not captured — set service credentials manually in Settings once Nextcloud is running.';
+            $log[] = $msg;
+            $emit('log', ['line' => $msg]);
+        }
     }
 
     private function writeEnv(array $values): void
