@@ -129,6 +129,33 @@ EOLYAML
 cd /opt/keycloak
 docker compose up -d
 echo "  Keycloak container started."
+
+# Suppress the "temporary admin" warning by re-applying the password via kcadm.sh
+# with --temporary false. Keycloak's bootstrap env-var path always marks the first
+# account as temporary; this clears that flag once the container is ready.
+echo "  Waiting for Keycloak to accept kcadm connections..."
+KC_READY=0
+for i in \$(seq 1 24); do
+    docker compose exec -T keycloak /opt/keycloak/bin/kcadm.sh \
+        config credentials \
+        --server http://localhost:8080 \
+        --realm master \
+        --user '{$adminUsername}' \
+        --password '{$adminPassword}' \
+        >/dev/null 2>&1 && KC_READY=1 && break
+    sleep 5
+done
+if [ "\$KC_READY" = "1" ]; then
+    docker compose exec -T keycloak /opt/keycloak/bin/kcadm.sh \
+        set-password \
+        --username '{$adminUsername}' \
+        --new-password '{$adminPassword}' \
+        --temporary false >/dev/null 2>&1 \
+        && echo "  Temp-admin flag cleared." \
+        || echo "  NOTE: Could not clear temp-admin flag (non-fatal)."
+else
+    echo "  NOTE: Keycloak not ready in time — temp-admin flag not cleared."
+fi
 BASH);
     }
 
@@ -150,7 +177,12 @@ fi
 test -d /opt/mailcow-dockerized || git clone https://github.com/mailcow/mailcow-dockerized /opt/mailcow-dockerized
 cd /opt/mailcow-dockerized
 MAILCOW_HOSTNAME={$hostname} MAILCOW_TZ={$timezone} bash generate_config.sh
-docker compose pull -q
+# Pull each service individually so the terminal shows clear per-image progress.
+echo "  Pulling Mailcow images (one by one)..."
+for svc in \$(docker compose config --services); do
+    echo "  Pulling \$svc..."
+    docker compose pull "\$svc"
+done
 docker compose up -d
 echo "  Mailcow started."
 BASH);
