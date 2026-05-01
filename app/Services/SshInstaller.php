@@ -282,8 +282,8 @@ BASH);
         ]);
 
         $this->execScript(<<<BASH
-# Ensure wget and curl are present (needed for AIO page fetch and API calls)
-for pkg in wget curl; do
+# Ensure required tools (wget for polling, jq for JSON manipulation)
+for pkg in wget jq; do
     command -v "\$pkg" >/dev/null 2>&1 || apt-get install -y -qq "\$pkg"
 done
 
@@ -295,78 +295,101 @@ cd /opt/nextcloud-aio
 docker compose up -d
 echo "  Nextcloud AIO mastercontainer started."
 
-# Poll with wget until AIO responds, and parse the passphrase directly from the
-# rendered HTML — it appears inline as:
-#   <span id="initial-password" class="monospace">PASSPHRASE</span>
-# This is simpler and more reliable than reading configuration.json.
+# Poll until AIO is ready — first page load generates the passphrase in configuration.json
 echo "  Waiting for AIO to become ready..."
-PASSPHRASE=""
+AIO_UP=0
 for i in \$(seq 1 24); do
-    PAGE=\$(wget -qO- --no-check-certificate https://localhost:9080/ 2>/dev/null || echo "")
-    if [ -n "\$PAGE" ]; then
-        PASSPHRASE=\$(printf '%s' "\$PAGE" \\
-            | sed -n 's/.*id="initial-password"[^>]*>\([^<]*\)<.*/\1/p' \\
-            | head -1 | tr -d '\\r')
-        if [ -n "\$PASSPHRASE" ]; then
-            echo "  AIO ready. Passphrase captured from page (attempt \$i)."
-            break
-        fi
-        echo "  Page returned but passphrase not found yet... attempt \$i/24"
-    else
-        echo "  Attempt \$i/24..."
+    RESPONSE=\$(wget -qO- --no-check-certificate https://localhost:9080/ 2>/dev/null || true)
+    if [ -n "\$RESPONSE" ]; then
+        echo "  AIO is up (attempt \$i)."
+        AIO_UP=1
+        break
     fi
+    echo "  Attempt \$i/24 — not ready yet..."
     sleep 5
 done
+[ "\$AIO_UP" = "1" ] || { echo "  ERROR: AIO did not respond after 2 minutes."; exit 1; }
 
-# Fallback: read passphrase from configuration.json inside the container.
-# The key is "password" (with a space after the colon in pretty-printed JSON).
-if [ -z "\$PASSPHRASE" ]; then
-    echo "  Trying configuration.json for passphrase..."
-    PASSPHRASE=\$(docker exec nextcloud-aio-mastercontainer \\
-        sh -c 'cat /mnt/docker-aio-config/data/configuration.json 2>/dev/null' \\
-        | sed -n 's/.*"password" *: *"\([^"]*\)".*/\1/p' | head -1)
-fi
+# Read the generated passphrase and hand it to InstallController for encrypted storage
+CONFIG_FILE="/var/lib/docker/volumes/nextcloud_aio_mastercontainer/_data/data/configuration.json"
+PASSPHRASE=\$(jq -r '.password' "\$CONFIG_FILE")
+[ -n "\$PASSPHRASE" ] || { echo "  ERROR: Could not read AIO passphrase."; exit 1; }
+echo "CAPTURE:nc_aio_pass:\$PASSPHRASE"
+echo "  Passphrase captured."
 
-if [ -z "\$PASSPHRASE" ]; then
-    echo "  WARNING: Could not get AIO passphrase. Configure manually at https://<server>:9080"
-    exit 0
-fi
+# Write domain, timezone, ports, and wasStartButtonClicked into configuration.json.
+# No secrets section — AIO generates those when containers first start.
+jq --arg domain "{$domain}" --arg tz "{$timezone}" \\
+    '. + {"domain": \$domain, "timezone": \$tz, "apache_port": "11000", "apache_ip_binding": "0.0.0.0", "borg_restore_password": "", "wasStartButtonClicked": true} | del(.secrets)' \\
+    "\$CONFIG_FILE" > /tmp/nc_cfg.json && mv /tmp/nc_cfg.json "\$CONFIG_FILE"
+docker exec -u root nextcloud-aio-mastercontainer chown www-data:www-data /mnt/docker-aio-config/data/configuration.json
+echo "  Config written: domain={$domain}, timezone={$timezone}."
 
-# Nextcloud admin password is written to configuration.json on first page fetch —
-# which happened in the loop above, so it should be available now.
-NC_PASS=\$(docker exec nextcloud-aio-mastercontainer \\
-    sh -c 'cat /mnt/docker-aio-config/data/configuration.json 2>/dev/null' \\
-    | sed -n 's/.*"NEXTCLOUD_PASSWORD" *: *"\([^"]*\)".*/\1/p' | head -1)
+# ── Phase 1: Pull images ──────────────────────────────────────────────────────
+# PullContainerImages.php has no terminal output; docker events shows each image
+# as it finishes downloading.
+echo "  Pulling Nextcloud AIO images (this may take several minutes)..."
+docker events \\
+    --filter 'type=image' --filter 'event=pull' \\
+    --format '  [pull] {{.Actor.Attributes.name}}' &
+PULL_EVENTS=\$!
+docker exec nextcloud-aio-mastercontainer \\
+    sudo -u www-data php /var/www/docker-aio/php/src/Cron/PullContainerImages.php 2>&1 || true
+sleep 2
+kill \$PULL_EVENTS 2>/dev/null; wait \$PULL_EVENTS 2>/dev/null || true
+echo "  Images pulled."
 
-# Login to AIO API
-LOGIN_OUT=\$(curl -sk -c /tmp/aio.jar \\
-    -X POST https://localhost:9080/api/auth/login \\
-    -H "Content-Type: application/json" \\
-    -d "{\"password\":\"\$PASSPHRASE\"}" 2>&1)
-echo "  Login: \$LOGIN_OUT"
+# ── Phase 2: Start containers ────────────────────────────────────────────────
+# StartContainers.php also has no output; docker events shows create/start per container.
+echo "  Starting Nextcloud AIO containers..."
+docker events \\
+    --filter 'type=container' \\
+    --filter 'event=create' \\
+    --filter 'event=start' \\
+    --format '  [{{.Action}}] {{.Actor.Attributes.name}}' &
+START_EVENTS=\$!
+docker exec nextcloud-aio-mastercontainer \\
+    sudo -u www-data php /var/www/docker-aio/php/src/Cron/StartContainers.php 2>&1 || true
+sleep 2
+kill \$START_EVENTS 2>/dev/null; wait \$START_EVENTS 2>/dev/null || true
+echo "  Container start triggered."
 
-# Configure domain and timezone
-CFG_OUT=\$(curl -sk -b /tmp/aio.jar \\
-    -X POST https://localhost:9080/api/configuration \\
-    -H "Content-Type: application/json" \\
-    -d '{"nextcloud_domain":"{$domain}","timezone":"{$timezone}"}' 2>&1)
-echo "  Config: \$CFG_OUT"
+# ── Phase 3: Wait for Nextcloud to initialize ────────────────────────────────
+echo "  Waiting for Nextcloud to initialize (may take 5-10 minutes)..."
+NC_READY=0
+for i in \$(seq 1 60); do
+    STATUS=\$(docker inspect --format '{{.State.Status}}' nextcloud-aio-nextcloud 2>/dev/null || echo "missing")
+    if [ "\$STATUS" = "running" ]; then
+        OCC_OK=\$(docker exec -u www-data nextcloud-aio-nextcloud \\
+            php occ status --output=json 2>/dev/null \\
+            | jq -r '.installed // false' 2>/dev/null || echo "false")
+        if [ "\$OCC_OK" = "true" ]; then
+            echo "  Nextcloud is ready (attempt \$i)."
+            NC_READY=1
+            break
+        fi
+        echo "  Attempt \$i/60 — Nextcloud initializing..."
+    else
+        echo "  Attempt \$i/60 — container: \$STATUS..."
+    fi
+    sleep 10
+done
+[ "\$NC_READY" = "1" ] || { echo "  ERROR: Nextcloud did not initialize in time."; exit 1; }
 
-# Start all child containers
-START_OUT=\$(curl -sk -b /tmp/aio.jar \\
-    -X POST https://localhost:9080/api/start 2>&1)
-echo "  Start: \$START_OUT"
+# Capture the auto-generated admin password from the secrets section
+NC_ADMIN_PASS=\$(jq -r '.secrets.NEXTCLOUD_PASSWORD // empty' "\$CONFIG_FILE" 2>/dev/null || true)
+[ -n "\$NC_ADMIN_PASS" ] && echo "CAPTURE:nc_admin_pass:\$NC_ADMIN_PASS"
+echo "  Admin password captured."
 
-rm -f /tmp/aio.jar
-echo "  Nextcloud AIO setup complete. Domain: {$domain} — Timezone: {$timezone}"
-
-if [ -n "\$NC_PASS" ]; then
-    echo "CAPTURE:nc_admin_pass:\$NC_PASS"
-    echo "  Nextcloud admin password captured."
-else
-    echo "  NOTE: Nextcloud admin password not yet in config."
-    echo "  Retrieve later: docker exec nextcloud-aio-mastercontainer sh -c 'grep NEXTCLOUD_PASSWORD /mnt/docker-aio-config/data/configuration.json'"
-fi
+# ── Phase 4: Create lintune service account ──────────────────────────────────
+NC_SVC_PASS=\$(openssl rand -hex 24)
+docker exec -u www-data \\
+    -e OC_PASS="\$NC_SVC_PASS" \\
+    nextcloud-aio-nextcloud \\
+    php occ user:add --password-from-env --display-name="Lintune Service" --group="admin" lintune-svc
+echo "CAPTURE:nc_svc_pass:\$NC_SVC_PASS"
+echo "  Service account 'lintune-svc' created."
+echo "  Nextcloud AIO setup complete. Domain: {$domain}"
 BASH);
     }
 

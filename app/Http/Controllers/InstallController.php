@@ -344,7 +344,16 @@ class InstallController extends Controller
         $ssh->ensureDocker();
         $ssh->installNextcloud($ncDomain, $timezone, $retry);
         Setting::set('nextcloud.url', $ncUrl);
-        $this->saveNcServiceCredentials($ssh, $emit, $log);
+        if ($aioPass = $ssh->getCaptured('nc_aio_pass')) {
+            Setting::set('nextcloud.aio_passphrase', $aioPass, encrypted: true);
+        }
+        if ($adminPass = $ssh->getCaptured('nc_admin_pass')) {
+            Setting::set('nextcloud.admin_password', $adminPass, encrypted: true);
+        }
+        if ($svcPass = $ssh->getCaptured('nc_svc_pass')) {
+            Setting::set('nextcloud.service_username', 'lintune-svc');
+            Setting::set('nextcloud.service_password', $svcPass, encrypted: true);
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -504,19 +513,6 @@ class InstallController extends Controller
 
         \Artisan::call('config:clear');
         $msg   = '→ Configuration saved.';
-        $log[] = $msg;
-        $emit('log', ['line' => $msg]);
-    }
-
-    private function saveNcServiceCredentials(SshInstaller $ssh, callable $emit, array &$log): void
-    {
-        $msg   = '  Nextcloud admin password is only written after the AIO wizard completes.';
-        $log[] = $msg;
-        $emit('log', ['line' => $msg]);
-        $msg   = '  Retrieve it with: docker exec nextcloud-aio-mastercontainer grep NEXTCLOUD_PASSWORD /mnt/docker-aio-config/data/configuration.json';
-        $log[] = $msg;
-        $emit('log', ['line' => $msg]);
-        $msg   = '  Then enter it in Settings -> Service credentials.';
         $log[] = $msg;
         $emit('log', ['line' => $msg]);
     }
