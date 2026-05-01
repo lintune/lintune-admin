@@ -63,7 +63,7 @@ class SshInstaller
         // than buffered until the script exits. Critical for long-running steps like
         // docker image pulls, where the old approach showed nothing until completion.
         $this->ssh->exec(
-            "{$prefix}bash << 'LINTUNE_EOF'\nset -e\n{$script}\nLINTUNE_EOF",
+            "{$prefix}bash << 'LINTUNE_EOF'\nset -e\nexec 2>&1\n{$script}\nLINTUNE_EOF",
             function (string $chunk) use (&$lineBuffer): void {
                 $lineBuffer .= $chunk;
                 while (($pos = strpos($lineBuffer, "\n")) !== false) {
@@ -282,8 +282,8 @@ BASH);
         ]);
 
         $this->execScript(<<<BASH
-# Ensure jq and curl are present (needed for AIO API calls)
-for pkg in curl jq; do
+# Ensure wget and curl are present (needed for AIO page fetch and API calls)
+for pkg in wget curl; do
     command -v "\$pkg" >/dev/null 2>&1 || apt-get install -y -qq "\$pkg"
 done
 
@@ -295,41 +295,50 @@ cd /opt/nextcloud-aio
 docker compose up -d
 echo "  Nextcloud AIO mastercontainer started."
 
-# Wait for AIO management UI to respond (HTTPS, self-signed cert → -k)
+# Poll with wget until AIO responds, and parse the passphrase directly from the
+# rendered HTML — it appears inline as:
+#   <span id="initial-password" class="monospace">PASSPHRASE</span>
+# This is simpler and more reliable than reading configuration.json.
 echo "  Waiting for AIO to become ready..."
-AIO_READY=0
+PASSPHRASE=""
 for i in \$(seq 1 24); do
-    HTTP=\$(curl -sk -o /dev/null -w "%{http_code}" https://localhost:9080/ 2>/dev/null || echo "0")
-    if [ "\$HTTP" = "200" ] || [ "\$HTTP" = "302" ] || [ "\$HTTP" = "301" ]; then
-        echo "  AIO ready (HTTP \$HTTP)."
-        AIO_READY=1
-        break
+    PAGE=\$(wget -qO- --no-check-certificate https://localhost:9080/ 2>/dev/null || echo "")
+    if [ -n "\$PAGE" ]; then
+        PASSPHRASE=\$(printf '%s' "\$PAGE" \\
+            | sed -n 's/.*id="initial-password"[^>]*>\([^<]*\)<.*/\1/p' \\
+            | head -1 | tr -d '\\r')
+        if [ -n "\$PASSPHRASE" ]; then
+            echo "  AIO ready. Passphrase captured from page (attempt \$i)."
+            break
+        fi
+        echo "  Page returned but passphrase not found yet... attempt \$i/24"
+    else
+        echo "  Attempt \$i/24..."
     fi
-    echo "  Attempt \$i/24..."
     sleep 5
 done
-if [ "\$AIO_READY" = "0" ]; then
-    echo "  WARNING: AIO did not respond in time. Configure manually at https://<server>:9080"
-    exit 0
-fi
 
-# Extract passphrase from AIO config (stored in the named volume)
-PASSPHRASE=""
-for i in \$(seq 1 10); do
+# Fallback: read passphrase from configuration.json inside the container.
+# The key is "password" (with a space after the colon in pretty-printed JSON).
+if [ -z "\$PASSPHRASE" ]; then
+    echo "  Trying configuration.json for passphrase..."
     PASSPHRASE=\$(docker exec nextcloud-aio-mastercontainer \\
         sh -c 'cat /mnt/docker-aio-config/data/configuration.json 2>/dev/null' \\
-        | jq -r '.AIOPassword // empty' 2>/dev/null || echo "")
-    [ -n "\$PASSPHRASE" ] && break
-    sleep 3
-done
+        | sed -n 's/.*"password" *: *"\([^"]*\)".*/\1/p' | head -1)
+fi
 
 if [ -z "\$PASSPHRASE" ]; then
-    echo "  WARNING: Could not extract AIO passphrase. Configure Nextcloud manually at https://<server>:9080"
+    echo "  WARNING: Could not get AIO passphrase. Configure manually at https://<server>:9080"
     exit 0
 fi
-echo "  Got AIO passphrase."
 
-# Login
+# Nextcloud admin password is written to configuration.json on first page fetch —
+# which happened in the loop above, so it should be available now.
+NC_PASS=\$(docker exec nextcloud-aio-mastercontainer \\
+    sh -c 'cat /mnt/docker-aio-config/data/configuration.json 2>/dev/null' \\
+    | sed -n 's/.*"NEXTCLOUD_PASSWORD" *: *"\([^"]*\)".*/\1/p' | head -1)
+
+# Login to AIO API
 LOGIN_OUT=\$(curl -sk -c /tmp/aio.jar \\
     -X POST https://localhost:9080/api/auth/login \\
     -H "Content-Type: application/json" \\
@@ -351,14 +360,12 @@ echo "  Start: \$START_OUT"
 rm -f /tmp/aio.jar
 echo "  Nextcloud AIO setup complete. Domain: {$domain} — Timezone: {$timezone}"
 
-# Capture the auto-generated Nextcloud admin password
-NC_PASS=\$(docker exec nextcloud-aio-mastercontainer \\
-    sh -c 'cat /mnt/docker-aio-config/data/configuration.json 2>/dev/null' \\
-    | jq -r '.nextcloud_password // .NcPassword // .nextcloud-password // empty' 2>/dev/null || echo "")
 if [ -n "\$NC_PASS" ]; then
     echo "CAPTURE:nc_admin_pass:\$NC_PASS"
+    echo "  Nextcloud admin password captured."
 else
-    echo "  NOTE: Could not capture Nextcloud admin password from config. Set service credentials manually in Settings."
+    echo "  NOTE: Nextcloud admin password not yet in config."
+    echo "  Retrieve later: docker exec nextcloud-aio-mastercontainer sh -c 'grep NEXTCLOUD_PASSWORD /mnt/docker-aio-config/data/configuration.json'"
 fi
 BASH);
     }
@@ -381,18 +388,24 @@ cd /opt/mailcow-dockerized
 DBROOT=\$(grep '^DBROOT=' mailcow.conf | cut -d'=' -f2-)
 [ -n "\$DBROOT" ] || { echo "  ERROR: Could not read DBROOT from mailcow.conf"; exit 1; }
 
-# Wait for MySQL to be ready
-echo "  Waiting for Mailcow MySQL..."
-MC_DB_READY=0
-for i in \$(seq 1 30); do
-    if docker compose exec -T mysql-mailcow mysqladmin ping -u root -p"\$DBROOT" --silent 2>/dev/null; then
-        MC_DB_READY=1
+# Wait for Mailcow's init scripts to finish creating the default admin row.
+# Polling MySQL ping alone is not enough — the admin table is populated by
+# Mailcow PHP scripts that run after MySQL accepts connections, and inserting
+# into the api table (FK -> admin.username) fails if admin doesn't exist yet.
+echo "  Waiting for Mailcow to finish initializing..."
+MC_INIT_READY=0
+for i in \$(seq 1 36); do
+    COUNT=\$(docker compose exec -T mysql-mailcow mysql -u root -p"\$DBROOT" mailcow \
+        --skip-column-names -e "SELECT COUNT(*) FROM admin WHERE username='admin'" 2>/dev/null | tr -d '[:space:]\\r\\n')
+    if [ "\$COUNT" = "1" ]; then
+        MC_INIT_READY=1
+        echo "  Mailcow initialized (attempt \$i)."
         break
     fi
+    echo "  Waiting... attempt \$i/36"
     sleep 5
 done
-[ "\$MC_DB_READY" = "1" ] || { echo "  ERROR: Mailcow MySQL not ready after 150s"; exit 1; }
-echo "  MySQL ready."
+[ "\$MC_INIT_READY" = "1" ] || { echo "  ERROR: Mailcow admin account not found after 3 min"; exit 1; }
 
 # Generate bootstrap API key for the default admin account
 BOOTSTRAP_KEY=\$(openssl rand -hex 24)

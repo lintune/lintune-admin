@@ -165,8 +165,11 @@
 
       if (data.redirect) {
         document.getElementById('statusIcon').className = 'bi bi-check-circle-fill text-success';
-        statusText.textContent = 'Installation complete — redirecting…';
-        window.location.href   = data.redirect;
+        statusText.textContent = 'All services installed successfully.';
+        nextBtnLbl.textContent = 'View Summary';
+        nextBtn.classList.remove('d-none');
+        nextBtn.onclick = function () { window.location.href = data.redirect; };
+        actionBox.classList.remove('d-none');
         return;
       }
 

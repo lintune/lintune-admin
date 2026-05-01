@@ -164,13 +164,12 @@ class InstallController extends Controller
             Cache::put("install_log:{$key}", $log, now()->addHours(2));
 
             if ($isLast) {
-                $this->writeEnv(['SETUP_COMPLETE' => 'true']);
                 Cache::forget("install_params:{$key}");
                 Cache::put("install_result:{$key}", [
                     'log'           => $log,
                     'kcUrl'         => Setting::get('keycloak.url', ''),
                     'adminUsername' => $kcAdminUsername,
-                ], now()->minutes(10));
+                ], now()->minutes(30));
                 Cache::forget("install_log:{$key}");
                 $emit('done', ['redirect' => route('install.done') . '?key=' . $key]);
             } else {
@@ -246,6 +245,11 @@ class InstallController extends Controller
             $kcUrl         = session('install_kc_url', '');
             $adminUsername = '';
         }
+
+        // Write SETUP_COMPLETE here rather than in the SSE stream so the
+        // done page itself is accessible (stream writes it → constructor
+        // sees it on the very next request → abort(404) before done() runs).
+        $this->writeEnv(['SETUP_COMPLETE' => 'true']);
 
         return view('install.done', compact('log', 'kcUrl', 'adminUsername'));
     }
@@ -506,18 +510,15 @@ class InstallController extends Controller
 
     private function saveNcServiceCredentials(SshInstaller $ssh, callable $emit, array &$log): void
     {
-        $pass = $ssh->getCaptured('nc_admin_pass');
-        if ($pass) {
-            Setting::set('nextcloud.service_user', 'admin', false);
-            Setting::set('nextcloud.service_password', $pass, true);
-            $msg   = '  Nextcloud service credentials saved (user: admin).';
-            $log[] = $msg;
-            $emit('log', ['line' => $msg]);
-        } else {
-            $msg   = '  Nextcloud admin password not captured — set service credentials manually in Settings once Nextcloud is running.';
-            $log[] = $msg;
-            $emit('log', ['line' => $msg]);
-        }
+        $msg   = '  Nextcloud admin password is only written after the AIO wizard completes.';
+        $log[] = $msg;
+        $emit('log', ['line' => $msg]);
+        $msg   = '  Retrieve it with: docker exec nextcloud-aio-mastercontainer grep NEXTCLOUD_PASSWORD /mnt/docker-aio-config/data/configuration.json';
+        $log[] = $msg;
+        $emit('log', ['line' => $msg]);
+        $msg   = '  Then enter it in Settings -> Service credentials.';
+        $log[] = $msg;
+        $emit('log', ['line' => $msg]);
     }
 
     private function writeInstallLog(string $key, string $stage, array $lines, ?string $error): void
