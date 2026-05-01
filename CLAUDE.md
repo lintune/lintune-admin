@@ -59,19 +59,21 @@ The installer runs before SETUP_COMPLETE is set and is blocked afterward.
 
 **Stages** — keycloak is always first; mailcow and nextcloud are optional depending on what the operator chose on the configure screen:
 1. `keycloak` — ensureDocker → installKeycloak → wait for KC ready → setupKeycloak (OIDC client, broker realm, service account, writes .env)
-2. `mailcow` — ensureDocker → installMailcow → Setting::set mailcow.url
+2. `mailcow` — ensureDocker → installMailcow → postConfigureMailcow (new superadmin, API key, delete default admin) → Setting::set mailcow.url + mailcow.api_key (encrypted)
 3. `nextcloud` — ensureDocker → installNextcloud → Setting::set nextcloud.url + saveNcServiceCredentials
 
 **SSE stream** — `GET /install/stream/{key}` with query params:
 - `?stage=keycloak|mailcow|nextcloud` (default: keycloak)
 - `?retry=1` — triggers cleanup (down + rm -rf install dir) before reinstalling
 
-After a non-final stage the SSE emits `done` with `{next_stage: 'mailcow'}` so the frontend shows a "Continue" button. After the last stage it emits `done` with `{redirect: '...'}`.
+After a non-final stage the SSE emits `done` with `{next_stage: 'mailcow'}` so the frontend shows a "Continue" button. After the last stage it emits `done` with `{redirect: '...'}` and the JS shows a "View Summary" button — it does NOT auto-redirect, giving the operator time to read the log.
+
+**`SETUP_COMPLETE` is written by `done()`, NOT by the SSE stream.** Writing it inside the stream causes a 404 on the done page: the browser's GET to `/install/done` hits the constructor which calls `abort(404)` when SETUP_COMPLETE is already true.
 
 **Cache keys** (all keyed by UUID from `run()`):
 - `install_params:{key}` — full form params, 2h TTL, kept until last stage completes
 - `install_log:{key}` — accumulated log across stages, 2h TTL
-- `install_result:{key}` — final log + kcUrl + adminUsername, 10 min TTL, read by done page
+- `install_result:{key}` — final log + kcUrl + adminUsername, 30 min TTL, read by done page
 
 **`writeEnv()`** — writes to `/var/www/html/lintune-admin/.env` which is volume-mounted from
 `/opt/lintune/admin.env` on the host. Changes persist across container recreations.
@@ -79,21 +81,25 @@ After a non-final stage the SSE emits `done` with `{next_stage: 'mailcow'}` so t
 Docker's `env_file:` at container start) would prevent Laravel's immutable Dotenv from
 loading the file-written `SETUP_COMPLETE=true` on the same container run.
 
+**`writeInstallLog()`** — writes `{8charkey}_{stage}.log` to `storage/logs/install/` (volume-mounted from `/opt/lintune/logs/` on the host). Called in the catch block of `stream()` after emitting the error event (not before — if it throws, the error event must already be sent). On retry, appends with a separator header rather than overwriting.
+
 ## SshInstaller service
 
 `app/Services/SshInstaller.php` — runs bash scripts on remote servers over SSH via phpseclib3.
 
 **Key behaviour:**
-- `execScript()` uses the phpseclib callback form of `exec()` so output streams to the browser line-by-line as it arrives, not buffered until the command exits. Critical for docker pull progress.
-- Lines matching `CAPTURE:key:value` are stored silently in `$captured[]` (used for Nextcloud admin password).
+- `execScript()` wraps the script in `bash << 'LINTUNE_EOF'` with `set -e` and `exec 2>&1` at the top, so stderr is captured and streamed alongside stdout. Uses the phpseclib callback form of `exec()` so output streams line-by-line as it arrives, not buffered until exit. Critical for docker pull progress.
+- Lines matching `CAPTURE:key:value` are stored silently in `$captured[]` and not emitted to the terminal.
 - Non-root users: commands are prefixed with `sudo`.
 - Avoids sequential `exec()` calls on the same channel (phpseclib3 channel-reuse bug) — all work is done in a single `exec()` per logical operation.
+- Credentials injected into bash scripts via base64 (`base64_encode()` in PHP, `printf '%s' 'B64' | base64 -d` in bash) to safely handle special characters.
 
 **Public methods:**
 - `ensureDocker()` — installs Docker via get.docker.com if missing.
 - `installKeycloak($user, $pass, $port, $hostname, $clean=false)` — docker-compose up in `/opt/keycloak`; post-start clears temp-admin flag via `kcadm.sh set-password --temporary false` inside the container.
 - `installMailcow($hostname, $tz, $clean=false)` — clones mailcow-dockerized, runs generate_config.sh; pulls each service image **individually** (sequential loop over `docker compose config --services`) so the terminal shows per-image progress.
-- `installNextcloud($domain, $tz, $clean=false)` — Nextcloud AIO mastercontainer; configures domain+timezone via AIO REST API; captures admin password.
+- `installNextcloud($domain, $tz, $clean=false)` — Nextcloud AIO mastercontainer via docker-compose in `/opt/nextcloud-aio`. Waits for AIO to respond by polling `wget -qO- --no-check-certificate https://localhost:9080/` and parsing the passphrase from the rendered HTML (`<span id="initial-password" class="monospace">...</span>`). Falls back to `configuration.json` inside the container (`/mnt/docker-aio-config/data/configuration.json`, key `"password"`). Configures domain+timezone via AIO REST API, then starts all child containers. Captures Nextcloud admin password (`NEXTCLOUD_PASSWORD` key in the same config file, written on first page fetch).
+- `postConfigureMailcow($adminUsername, $adminPassword)` — runs after `installMailcow()`; polls for the default `admin` row in MySQL (not just MySQL ping — FK constraint requires admin row before api row), inserts a bootstrap API key, waits for the HTTP API, generates a bcrypt hash via php-fpm-mailcow container, inserts the new superadmin, assigns a permanent API key, then deletes the default admin and its API row. Emits `CAPTURE:mailcow_api_key:...`.
 - `$clean=true` wipes the install directory (docker compose down + rm -rf) before reinstalling. Used when the installer frontend sends `?retry=1`.
 
 ## Middleware
@@ -108,3 +114,5 @@ loading the file-written `SETUP_COMPLETE=true` on the same container run.
 - Do not duplicate platform config into lintune-dash's own config files.
 - Do not delete `install_params:{key}` from cache at the start of a stream — params must persist across all stages. Only the last stage cleans them up.
 - Do not call `docker compose pull` for all Mailcow services at once — pull one service at a time with a loop so the terminal shows progress per image.
+- Do not write `SETUP_COMPLETE=true` inside the SSE stream — write it in `done()` only. Writing it during the stream causes a 404 when the browser's GET to `/install/done` hits the constructor's `abort(404)` guard.
+- Do not emit the error SSE event after attempting `writeInstallLog()` — emit error first, then wrap the log write in its own try/catch. If the log write throws before the error event, the browser sees a silent "lost connection".
