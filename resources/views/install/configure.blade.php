@@ -30,6 +30,17 @@
   If the username is not <code>root</code>, <code>sudo</code> will be used automatically.
 </div>
 
+@if($baseDomain)
+<div class="alert alert-success small mb-4">
+  <div class="fw-semibold mb-2"><i class="bi bi-globe me-2"></i>Base domain: <code>{{ $baseDomain }}</code> — service subdomains are pre-configured below.</div>
+  <div class="row row-cols-2 row-cols-md-4 g-1 mt-1">
+    @foreach(['auth' => 'Keycloak', 'mail' => 'Mailcow', 'cloud' => 'Nextcloud', 'vault' => 'Vaultwarden'] as $prefix => $label)
+      <div class="col"><code>{{ $prefix }}.{{ $baseDomain }}</code> <span class="text-muted">→ {{ $label }}</span></div>
+    @endforeach
+  </div>
+</div>
+@endif
+
 <form method="POST" action="{{ route('install.run') }}">
   @csrf
   <input type="hidden" name="server_type" value="{{ $type }}">
@@ -138,8 +149,8 @@
       <div class="mb-0">
         <label class="form-label">Public URL <span class="text-muted fw-normal">(optional — if behind a reverse proxy)</span></label>
         <input type="url" name="kc_public_url" class="form-control"
-               value="{{ old('kc_public_url') }}"
-               placeholder="https://keycloak.company.com" />
+               value="{{ old('kc_public_url', $baseDomain ? 'https://auth.'.$baseDomain : '') }}"
+               placeholder="https://auth.company.com" />
         <div class="form-text">
           If provided, Keycloak is configured with reverse-proxy headers and <code>KC_HOSTNAME</code> is set to this domain.
           Leave blank for direct <code>http://ip:port</code> access.
@@ -240,7 +251,7 @@
         <div class="col-sm-6">
           <label class="form-label small">Mail hostname</label>
           <input type="text" name="mailcow_hostname" class="form-control form-control-sm"
-                 value="{{ old('mailcow_hostname') }}" placeholder="mail.company.com" />
+                 value="{{ old('mailcow_hostname', $baseDomain ? 'mail.'.$baseDomain : '') }}" placeholder="mail.company.com" />
           <div class="form-text">Must resolve to the Mailcow server's IP.</div>
         </div>
       </div>
@@ -287,7 +298,7 @@
         <div class="col-12">
           <label class="form-label small fw-semibold">Nextcloud public URL <span class="text-danger">*</span></label>
           <input type="url" id="nc_url" name="nc_url" class="form-control form-control-sm @error('nc_url') is-invalid @enderror"
-                 value="{{ old('nc_url') }}" placeholder="https://cloud.company.com" />
+                 value="{{ old('nc_url', $baseDomain ? 'https://cloud.'.$baseDomain : '') }}" placeholder="https://cloud.company.com" />
           @error('nc_url')
             <div class="invalid-feedback">{{ $message }}</div>
           @enderror

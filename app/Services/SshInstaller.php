@@ -54,10 +54,9 @@ class SshInstaller
      * where sequential exec() calls on the same connection fail with
      * "Please close the channel before trying to open it again".
      */
-    private function execScript(string $script): string
+    private function execScript(string $script): void
     {
         $prefix     = $this->useSudo ? 'sudo ' : '';
-        $fullOutput = '';
         $lineBuffer = '';
 
         // Use the phpseclib callback form so output is emitted as it arrives rather
@@ -65,8 +64,7 @@ class SshInstaller
         // docker image pulls, where the old approach showed nothing until completion.
         $this->ssh->exec(
             "{$prefix}bash << 'LINTUNE_EOF'\nset -e\n{$script}\nLINTUNE_EOF",
-            function (string $chunk) use (&$fullOutput, &$lineBuffer): void {
-                $fullOutput .= $chunk;
+            function (string $chunk) use (&$lineBuffer): void {
                 $lineBuffer .= $chunk;
                 while (($pos = strpos($lineBuffer, "\n")) !== false) {
                     $line       = substr($lineBuffer, 0, $pos);
@@ -89,7 +87,10 @@ class SshInstaller
             }
         }
 
-        return $fullOutput;
+        $exit = $this->ssh->getExitStatus();
+        if ($exit !== false && $exit !== 0) {
+            throw new \RuntimeException("Remote script exited with status {$exit}");
+        }
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -148,7 +149,12 @@ YAML;
             $extraEnv ?: null,
             '    ports:',
             "      - \"{$externalPort}:8080\"",
+            '    volumes:',
+            '      - keycloak_data:/opt/keycloak/data',
             '    restart: unless-stopped',
+            '',
+            'volumes:',
+            '  keycloak_data:',
         ]));
 
         $this->execScript(<<<BASH
@@ -211,6 +217,20 @@ if [ -n "\$MISSING" ]; then
     apt-get install -y -qq \$MISSING
 fi
 
+# Mailcow needs port 25 — stop and remove any MTA that might be holding it,
+# then forcibly kill whatever process is still bound to the port.
+echo "  Freeing port 25 for Mailcow..."
+for svc in postfix sendmail exim4 exim; do
+    systemctl stop "\$svc"    2>/dev/null || true
+    systemctl disable "\$svc" 2>/dev/null || true
+done
+apt-get remove -y --purge postfix sendmail exim4 exim4-base 2>/dev/null || true
+# Belt-and-suspenders: kill any remaining process bound to port 25
+if command -v fuser >/dev/null 2>&1; then
+    fuser -k 25/tcp 2>/dev/null || true
+fi
+echo "  Port 25 cleared."
+
 test -d /opt/mailcow-dockerized || git clone https://github.com/mailcow/mailcow-dockerized /opt/mailcow-dockerized
 cd /opt/mailcow-dockerized
 MAILCOW_HOSTNAME={$hostname} MAILCOW_TZ={$timezone} bash generate_config.sh
@@ -231,31 +251,48 @@ BASH);
         if ($clean) {
             $this->emit('  Cleaning up previous Nextcloud installation...');
             $this->execScript(<<<'BASH'
+cd /opt/nextcloud-aio 2>/dev/null && docker compose down --remove-orphans 2>/dev/null || true
 docker rm -f nextcloud-aio-mastercontainer 2>/dev/null || true
 docker volume rm nextcloud_aio_mastercontainer 2>/dev/null || true
+rm -rf /opt/nextcloud-aio
 BASH);
         }
-        // Port 9080 for AIO management UI (avoids conflict with Keycloak on 8080).
-        // APACHE_PORT=11000: Nextcloud web interface port once AIO setup completes.
-        // After the mastercontainer is up we use the AIO REST API to configure the
-        // domain and timezone and start all child containers automatically.
+
+        $composeYaml = implode("\n", [
+            'services:',
+            '  nextcloud-aio-mastercontainer:',
+            '    image: nextcloud/all-in-one:latest',
+            '    container_name: nextcloud-aio-mastercontainer',
+            '    restart: unless-stopped',
+            '    ports:',
+            '      - "9080:8080"',
+            '    environment:',
+            '      APACHE_PORT: "11000"',
+            '      APACHE_IP_BINDING: "0.0.0.0"',
+            '      SKIP_DOMAIN_VALIDATION: "true"',
+            '    extra_hosts:',
+            '      - "host.docker.internal:host-gateway"',
+            '    volumes:',
+            '      - nextcloud_aio_mastercontainer:/mnt/docker-aio-config',
+            '      - /var/run/docker.sock:/var/run/docker.sock:ro',
+            '',
+            'volumes:',
+            '  nextcloud_aio_mastercontainer:',
+            '    name: nextcloud_aio_mastercontainer',
+        ]);
+
         $this->execScript(<<<BASH
 # Ensure jq and curl are present (needed for AIO API calls)
 for pkg in curl jq; do
     command -v "\$pkg" >/dev/null 2>&1 || apt-get install -y -qq "\$pkg"
 done
 
-docker rm -f nextcloud-aio-mastercontainer 2>/dev/null || true
-docker run -d \\
-    --name nextcloud-aio-mastercontainer \\
-    -p 9080:8080 \\
-    --add-host=host.docker.internal:host-gateway \\
-    -e APACHE_PORT=11000 \\
-    -e APACHE_IP_BINDING=0.0.0.0 \\
-    -e SKIP_DOMAIN_VALIDATION=true \\
-    -v nextcloud_aio_mastercontainer:/mnt/docker-aio-config \\
-    -v /var/run/docker.sock:/var/run/docker.sock:ro \\
-    nextcloud/all-in-one:latest
+mkdir -p /opt/nextcloud-aio
+cat > /opt/nextcloud-aio/docker-compose.yml << 'EOLYAML'
+{$composeYaml}
+EOLYAML
+cd /opt/nextcloud-aio
+docker compose up -d
 echo "  Nextcloud AIO mastercontainer started."
 
 # Wait for AIO management UI to respond (HTTPS, self-signed cert → -k)
@@ -292,7 +329,7 @@ if [ -z "\$PASSPHRASE" ]; then
 fi
 echo "  Got AIO passphrase."
 
-# Login — sets a session cookie used for subsequent API calls
+# Login
 LOGIN_OUT=\$(curl -sk -c /tmp/aio.jar \\
     -X POST https://localhost:9080/api/auth/login \\
     -H "Content-Type: application/json" \\
@@ -314,9 +351,7 @@ echo "  Start: \$START_OUT"
 rm -f /tmp/aio.jar
 echo "  Nextcloud AIO setup complete. Domain: {$domain} — Timezone: {$timezone}"
 
-# Capture the auto-generated Nextcloud admin password so Lintune can store it
-# as the service credential without showing it in the terminal.
-# AIO stores it in its config JSON; try the most common key names across versions.
+# Capture the auto-generated Nextcloud admin password
 NC_PASS=\$(docker exec nextcloud-aio-mastercontainer \\
     sh -c 'cat /mnt/docker-aio-config/data/configuration.json 2>/dev/null' \\
     | jq -r '.nextcloud_password // .NcPassword // .nextcloud-password // empty' 2>/dev/null || echo "")
@@ -325,6 +360,91 @@ if [ -n "\$NC_PASS" ]; then
 else
     echo "  NOTE: Could not capture Nextcloud admin password from config. Set service credentials manually in Settings."
 fi
+BASH);
+    }
+
+    public function postConfigureMailcow(string $adminUsername, string $adminPassword): void
+    {
+        $this->emit('→ Configuring Mailcow admin account...');
+
+        // Inject credentials via base64 to safely handle any special characters.
+        $b64User = base64_encode($adminUsername);
+        $b64Pass = base64_encode($adminPassword);
+
+        $this->execScript(<<<BASH
+MC_USER=\$(printf '%s' '{$b64User}' | base64 -d)
+MC_PASS=\$(printf '%s' '{$b64Pass}' | base64 -d)
+
+cd /opt/mailcow-dockerized
+
+# Read MySQL root password from mailcow.conf (generated by generate_config.sh)
+DBROOT=\$(grep '^DBROOT=' mailcow.conf | cut -d'=' -f2-)
+[ -n "\$DBROOT" ] || { echo "  ERROR: Could not read DBROOT from mailcow.conf"; exit 1; }
+
+# Wait for MySQL to be ready
+echo "  Waiting for Mailcow MySQL..."
+MC_DB_READY=0
+for i in \$(seq 1 30); do
+    if docker compose exec -T mysql-mailcow mysqladmin ping -u root -p"\$DBROOT" --silent 2>/dev/null; then
+        MC_DB_READY=1
+        break
+    fi
+    sleep 5
+done
+[ "\$MC_DB_READY" = "1" ] || { echo "  ERROR: Mailcow MySQL not ready after 150s"; exit 1; }
+echo "  MySQL ready."
+
+# Generate bootstrap API key for the default admin account
+BOOTSTRAP_KEY=\$(openssl rand -hex 24)
+docker compose exec -T mysql-mailcow mysql -u root -p"\$DBROOT" mailcow -e \\
+    "INSERT INTO api (username, api_key, active, skip_ip_check, allow_from) \\
+     VALUES ('admin', '\$BOOTSTRAP_KEY', 1, 1, '') \\
+     ON DUPLICATE KEY UPDATE api_key='\$BOOTSTRAP_KEY', active=1, skip_ip_check=1"
+echo "  Bootstrap API key set."
+
+# Wait for the Mailcow HTTP API to respond
+echo "  Waiting for Mailcow API..."
+MC_API_READY=0
+for i in \$(seq 1 24); do
+    HTTP=\$(curl -sk -o /dev/null -w "%{http_code}" \\
+        -H "X-API-Key: \$BOOTSTRAP_KEY" \\
+        https://localhost/api/v1/get/domain/all 2>/dev/null || echo "0")
+    if [ "\$HTTP" = "200" ]; then
+        echo "  Mailcow API ready."
+        MC_API_READY=1
+        break
+    fi
+    echo "  Attempt \$i/24 (HTTP \$HTTP)..."
+    sleep 5
+done
+[ "\$MC_API_READY" = "1" ] || { echo "  ERROR: Mailcow API not ready after 2 min"; exit 1; }
+
+# Bcrypt-hash the new admin password using Mailcow's PHP-FPM container
+MC_HASH=\$(docker compose exec -T php-fpm-mailcow \\
+    php -r "echo password_hash('\$MC_PASS', PASSWORD_BCRYPT, ['cost' => 12]);" 2>/dev/null | tr -d '\\r\\n')
+[ -n "\$MC_HASH" ] || { echo "  ERROR: Could not generate bcrypt hash"; exit 1; }
+
+# Create new superadmin in the database (idempotent)
+docker compose exec -T mysql-mailcow mysql -u root -p"\$DBROOT" mailcow -e \\
+    "INSERT INTO admin (username, password, superadmin, active) \\
+     VALUES ('\$MC_USER', '\$MC_HASH', 1, 1) \\
+     ON DUPLICATE KEY UPDATE password='\$MC_HASH', active=1"
+echo "  Admin '\$MC_USER' created."
+
+# Generate and register API key for the new admin
+NEW_API_KEY=\$(openssl rand -hex 24)
+docker compose exec -T mysql-mailcow mysql -u root -p"\$DBROOT" mailcow -e \\
+    "INSERT INTO api (username, api_key, active, skip_ip_check, allow_from) \\
+     VALUES ('\$MC_USER', '\$NEW_API_KEY', 1, 1, '') \\
+     ON DUPLICATE KEY UPDATE api_key='\$NEW_API_KEY', active=1, skip_ip_check=1"
+
+# Remove default admin:moohoo account
+docker compose exec -T mysql-mailcow mysql -u root -p"\$DBROOT" mailcow -e \\
+    "DELETE FROM api WHERE username='admin'; DELETE FROM admin WHERE username='admin';"
+echo "  Default admin removed."
+
+echo "CAPTURE:mailcow_api_key:\$NEW_API_KEY"
+echo "  Mailcow post-configuration complete."
 BASH);
     }
 }

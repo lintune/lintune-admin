@@ -44,24 +44,23 @@
     <span id="statusText" class="fw-semibold">
       Installing {{ $stageLabels[$stages[0]] ?? 'Keycloak' }} — please wait, this may take several minutes…
     </span>
+    <div id="actionBox" class="ms-auto d-flex gap-2 d-none">
+      <button id="retryBtn" class="btn btn-sm btn-outline-warning d-none">
+        <i class="bi bi-arrow-clockwise me-1"></i>Retry
+      </button>
+      <button id="nextBtn" class="btn btn-sm btn-success d-none">
+        <i class="bi bi-arrow-right-circle me-1"></i><span id="nextBtnLabel">Continue</span>
+      </button>
+    </div>
   </div>
   <div class="card-body p-0">
     <pre id="terminal"
          class="bg-dark text-light m-0 p-3 rounded-bottom"
-         style="min-height:320px;max-height:500px;overflow-y:auto;font-size:.78rem;font-family:monospace;white-space:pre-wrap;word-break:break-all"></pre>
+         style="min-height:200px;max-height:min(500px,55vh);overflow-y:auto;font-size:.78rem;font-family:monospace;white-space:pre-wrap;word-break:break-all"></pre>
   </div>
 </div>
 
 <div id="errorBox" class="alert alert-danger d-none mb-3"></div>
-
-<div id="actionBox" class="d-flex gap-2 justify-content-center d-none">
-  <button id="retryBtn" class="btn btn-outline-warning d-none">
-    <i class="bi bi-arrow-clockwise me-1"></i>Retry
-  </button>
-  <button id="nextBtn" class="btn btn-success btn-lg px-5 d-none">
-    <i class="bi bi-arrow-right-circle me-2"></i><span id="nextBtnLabel">Continue</span>
-  </button>
-</div>
 
 @endsection
 
@@ -141,6 +140,10 @@
     const label  = stageLabels[stage] || stage;
 
     markActive(stage);
+
+    if (!retry) {
+      terminal.textContent = '';
+    }
 
     document.getElementById('statusIcon').className = 'spinner-border spinner-border-sm text-primary';
     statusText.textContent = (retry ? 'Retrying ' : 'Installing ') + label + ' — please wait…';

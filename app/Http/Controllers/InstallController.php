@@ -35,9 +35,10 @@ class InstallController extends Controller
 
     public function configure(Request $request)
     {
-        $type = $request->query('type', session('install_server_type', 'single'));
+        $type       = $request->query('type', session('install_server_type', 'single'));
+        $baseDomain = env('BASE_DOMAIN');
         session(['install_server_type' => $type]);
-        return view('install.configure', compact('type'));
+        return view('install.configure', compact('type', 'baseDomain'));
     }
 
     // ── Guided: begin (validate, cache params, redirect to progress) ──────────
@@ -127,7 +128,8 @@ class InstallController extends Controller
                 flush();
             };
 
-            $log             = Cache::get("install_log:{$key}", []);
+            $priorLog        = Cache::get("install_log:{$key}", []);
+            $log             = $priorLog;
             $type            = $params['server_type'] ?? 'single';
             $kcAdminUsername = $params['admin_username'];
             $kcAdminPassword = $params['admin_password'];
@@ -150,12 +152,19 @@ class InstallController extends Controller
                 };
             } catch (\Throwable $e) {
                 $emit('error', ['message' => ucfirst($stage) . ' installation failed: ' . $e->getMessage()]);
+                try {
+                    $this->writeInstallLog($key, $stage, array_slice($log, count($priorLog)), $e->getMessage());
+                } catch (\Throwable) {}
                 return;
             }
 
+            try {
+                $this->writeInstallLog($key, $stage, array_slice($log, count($priorLog)), null);
+            } catch (\Throwable) {}
             Cache::put("install_log:{$key}", $log, now()->addHours(2));
 
             if ($isLast) {
+                $this->writeEnv(['SETUP_COMPLETE' => 'true']);
                 Cache::forget("install_params:{$key}");
                 Cache::put("install_result:{$key}", [
                     'log'           => $log,
@@ -306,6 +315,12 @@ class InstallController extends Controller
         $ssh->ensureDocker();
         $ssh->installMailcow($params['mailcow_hostname'], $timezone, $retry);
         Setting::set('mailcow.url', "https://{$params['mailcow_hostname']}");
+
+        $ssh->postConfigureMailcow($params['admin_username'], $params['admin_password']);
+        $apiKey = $ssh->getCaptured('mailcow_api_key');
+        if ($apiKey) {
+            Setting::set('mailcow.api_key', $apiKey, true);
+        }
     }
 
     private function runNextcloudStage(array $params, string $type, callable $cb, callable $emit, array &$log, bool $retry): void
@@ -478,7 +493,6 @@ class InstallController extends Controller
             'KEYCLOAK_ADMIN_USER'          => $serviceUsername,
             'KEYCLOAK_ADMIN_PASSWORD'      => base64_encode(encrypt($servicePassword)),
             'KEYCLOAK_BROKER_REALM'        => $brokerRealm,
-            'SETUP_COMPLETE'               => 'true',
         ]);
 
         Setting::set('keycloak.url', $publicBase);
@@ -504,6 +518,22 @@ class InstallController extends Controller
             $log[] = $msg;
             $emit('log', ['line' => $msg]);
         }
+    }
+
+    private function writeInstallLog(string $key, string $stage, array $lines, ?string $error): void
+    {
+        $dir = storage_path('logs/install');
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+
+        $shortKey = substr(str_replace('-', '', $key), 0, 8);
+        $path     = "{$dir}/{$shortKey}_{$stage}.log";
+
+        $status = $error ? "FAILED: {$error}" : 'OK';
+        $header = sprintf("[%s] stage=%s status=%s\n%s\n", now()->toIso8601String(), $stage, $status, str_repeat('-', 72));
+
+        file_put_contents($path, $header . implode("\n", $lines) . "\n", FILE_APPEND | LOCK_EX);
     }
 
     private function writeEnv(array $values): void
