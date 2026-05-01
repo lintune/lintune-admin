@@ -234,6 +234,11 @@ echo "  Port 25 cleared."
 test -d /opt/mailcow-dockerized || git clone https://github.com/mailcow/mailcow-dockerized /opt/mailcow-dockerized
 cd /opt/mailcow-dockerized
 MAILCOW_HOSTNAME={$hostname} MAILCOW_TZ={$timezone} bash generate_config.sh
+# Inject API key and IP allowlist before containers start so the API is
+# immediately secured; 172.16.0.0/12 covers all default Docker bridge ranges.
+MC_API_KEY=\$(tr -dc 'A-Z0-9' < /dev/urandom | head -c 30 | sed 's/.\{6\}/&-/g' | sed 's/-\$//')
+printf '\nAPI_KEY=%s\nAPI_ALLOW_FROM=127.0.0.1,172.16.0.0/12\n' "\$MC_API_KEY" >> mailcow.conf
+echo "  Mailcow API key written to mailcow.conf."
 # Pull each service individually so the terminal shows clear per-image progress.
 echo "  Pulling Mailcow images (one by one)..."
 for svc in \$(docker compose config --services); do
@@ -241,6 +246,9 @@ for svc in \$(docker compose config --services); do
     docker compose pull "\$svc"
 done
 docker compose up -d
+# Mailcow reads API_KEY/API_ALLOW_FROM on first start and persists them to its DB.
+# Remove from the conf file now so credentials don't sit in plaintext on disk.
+sed -i '/^API_KEY=/d;/^API_ALLOW_FROM=/d' mailcow.conf
 echo "  Mailcow started."
 BASH);
     }
