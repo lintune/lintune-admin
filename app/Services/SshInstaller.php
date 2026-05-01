@@ -56,17 +56,40 @@ class SshInstaller
      */
     private function execScript(string $script): string
     {
-        $prefix = $this->useSudo ? 'sudo ' : '';
-        $output = $this->ssh->exec("{$prefix}bash << 'LINTUNE_EOF'\nset -e\n{$script}\nLINTUNE_EOF");
-        foreach (explode("\n", $output) as $line) {
-            // Lines matching CAPTURE:key:value are stored silently, never sent to the terminal.
-            if (preg_match('/^CAPTURE:([^:]+):(.*)$/', $line, $m)) {
+        $prefix     = $this->useSudo ? 'sudo ' : '';
+        $fullOutput = '';
+        $lineBuffer = '';
+
+        // Use the phpseclib callback form so output is emitted as it arrives rather
+        // than buffered until the script exits. Critical for long-running steps like
+        // docker image pulls, where the old approach showed nothing until completion.
+        $this->ssh->exec(
+            "{$prefix}bash << 'LINTUNE_EOF'\nset -e\n{$script}\nLINTUNE_EOF",
+            function (string $chunk) use (&$fullOutput, &$lineBuffer): void {
+                $fullOutput .= $chunk;
+                $lineBuffer .= $chunk;
+                while (($pos = strpos($lineBuffer, "\n")) !== false) {
+                    $line       = substr($lineBuffer, 0, $pos);
+                    $lineBuffer = substr($lineBuffer, $pos + 1);
+                    if (preg_match('/^CAPTURE:([^:]+):(.*)$/', $line, $m)) {
+                        $this->captured[$m[1]] = $m[2];
+                    } elseif (trim($line) !== '') {
+                        $this->emit($line);
+                    }
+                }
+            }
+        );
+
+        // Flush any remaining content that arrived without a trailing newline
+        if (trim($lineBuffer) !== '') {
+            if (preg_match('/^CAPTURE:([^:]+):(.*)$/', $lineBuffer, $m)) {
                 $this->captured[$m[1]] = $m[2];
-            } elseif (trim($line) !== '') {
-                $this->emit($line);
+            } else {
+                $this->emit($lineBuffer);
             }
         }
-        return $output;
+
+        return $fullOutput;
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -89,9 +112,16 @@ BASH);
      * @param int         $externalPort  Host port mapped to Keycloak's container port 8080.
      * @param string|null $hostname      Public hostname → enables production mode + reverse-proxy env vars.
      */
-    public function installKeycloak(string $adminUsername, string $adminPassword, int $externalPort = 8080, ?string $hostname = null): void
+    public function installKeycloak(string $adminUsername, string $adminPassword, int $externalPort = 8080, ?string $hostname = null, bool $clean = false): void
     {
         $this->emit('→ Installing Keycloak...');
+        if ($clean) {
+            $this->emit('  Cleaning up previous Keycloak installation...');
+            $this->execScript(<<<'BASH'
+cd /opt/keycloak 2>/dev/null && docker compose down --remove-orphans 2>/dev/null || true
+rm -rf /opt/keycloak
+BASH);
+        }
 
         if ($hostname) {
             $kcCommand = 'start';
@@ -159,9 +189,16 @@ fi
 BASH);
     }
 
-    public function installMailcow(string $hostname, string $timezone = 'UTC'): void
+    public function installMailcow(string $hostname, string $timezone = 'UTC', bool $clean = false): void
     {
         $this->emit('→ Installing Mailcow...');
+        if ($clean) {
+            $this->emit('  Cleaning up previous Mailcow installation...');
+            $this->execScript(<<<'BASH'
+cd /opt/mailcow-dockerized 2>/dev/null && docker compose down --remove-orphans 2>/dev/null || true
+rm -rf /opt/mailcow-dockerized
+BASH);
+        }
         $this->execScript(<<<BASH
 # Install missing dependencies (Mailcow requires git, curl, jq, openssl)
 MISSING=""
@@ -188,9 +225,16 @@ echo "  Mailcow started."
 BASH);
     }
 
-    public function installNextcloud(string $domain, string $timezone = 'UTC'): void
+    public function installNextcloud(string $domain, string $timezone = 'UTC', bool $clean = false): void
     {
         $this->emit('→ Installing Nextcloud AIO...');
+        if ($clean) {
+            $this->emit('  Cleaning up previous Nextcloud installation...');
+            $this->execScript(<<<'BASH'
+docker rm -f nextcloud-aio-mastercontainer 2>/dev/null || true
+docker volume rm nextcloud_aio_mastercontainer 2>/dev/null || true
+BASH);
+        }
         // Port 9080 for AIO management UI (avoids conflict with Keycloak on 8080).
         // APACHE_PORT=11000: Nextcloud web interface port once AIO setup completes.
         // After the mastercontainer is up we use the AIO REST API to configure the

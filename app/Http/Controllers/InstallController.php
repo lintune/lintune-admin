@@ -73,7 +73,7 @@ class InstallController extends Controller
         }
 
         $key = Str::uuid()->toString();
-        Cache::put("install_params:{$key}", $request->except('_token'), now()->addHour());
+        Cache::put("install_params:{$key}", $request->except('_token'), now()->addHours(2));
 
         return redirect()->route('install.progress', $key);
     }
@@ -82,23 +82,38 @@ class InstallController extends Controller
 
     public function progress(string $key)
     {
-        if (!Cache::has("install_params:{$key}")) {
+        $params = Cache::get("install_params:{$key}");
+        if (!$params) {
             return redirect()->route('install.welcome');
         }
-        return view('install.progress', compact('key'));
+        $stages      = $this->getStages($params);
+        $stageLabels = $this->stageLabels();
+        return view('install.progress', compact('key', 'stages', 'stageLabels'));
     }
 
     // ── Guided: SSE stream ────────────────────────────────────────────────────
 
-    public function stream(string $key): \Symfony\Component\HttpFoundation\StreamedResponse
+    /**
+     * Streams a single install stage. Query params:
+     *   stage  = keycloak | mailcow | nextcloud  (default: keycloak)
+     *   retry  = 1  — wipe the stage directory before re-installing
+     */
+    public function stream(Request $request, string $key): \Symfony\Component\HttpFoundation\StreamedResponse
     {
         $params = Cache::get("install_params:{$key}");
         if (!$params) {
             abort(404);
         }
-        Cache::forget("install_params:{$key}");
 
-        return response()->stream(function () use ($key, $params) {
+        $stage  = $request->query('stage', 'keycloak');
+        $retry  = (bool) $request->query('retry', false);
+        $stages = $this->getStages($params);
+
+        if (!in_array($stage, $stages, true)) {
+            abort(404);
+        }
+
+        return response()->stream(function () use ($key, $stage, $retry, $stages, $params) {
             set_time_limit(0);
             ignore_user_abort(true);
 
@@ -112,7 +127,7 @@ class InstallController extends Controller
                 flush();
             };
 
-            $log             = [];
+            $log             = Cache::get("install_log:{$key}", []);
             $type            = $params['server_type'] ?? 'single';
             $kcAdminUsername = $params['admin_username'];
             $kcAdminPassword = $params['admin_password'];
@@ -122,118 +137,36 @@ class InstallController extends Controller
                 $emit('log', ['line' => $line]);
             };
 
-            try {
-                if ($type === 'single') {
-                    // "__local__" → host machine running the Docker container
-                    $kcHost     = ($params['ssh_host'] ?? '') === '__local__'
-                        ? 'host.docker.internal'
-                        : ($params['ssh_host'] ?? '');
-                    $kcPort     = (int) ($params['kc_port'] ?? 8080);
-                    $kcHostname = !empty($params['kc_public_url'])
-                        ? parse_url(rtrim($params['kc_public_url'], '/'), PHP_URL_HOST)
-                        : null;
-
-                    $ssh = new SshInstaller($kcHost, $params['ssh_user'], $params['ssh_pass']);
-                    $ssh->setOutputCallback($cb);
-                    $ssh->ensureDocker();
-                    $ssh->installKeycloak($kcAdminUsername, $kcAdminPassword, $kcPort, $kcHostname);
-
-                    $timezone = $params['timezone'] ?? 'UTC';
-
-                    if (!empty($params['install_mailcow']) && !empty($params['mailcow_hostname'])) {
-                        $ssh->installMailcow($params['mailcow_hostname'], $timezone);
-                        Setting::set('mailcow.url', "https://{$params['mailcow_hostname']}");
-                    }
-
-                    if (!empty($params['install_nextcloud'])) {
-                        $ncUrl    = rtrim($params['nc_url'], '/');
-                        $ncDomain = parse_url($ncUrl, PHP_URL_HOST);
-                        $ssh->installNextcloud($ncDomain, $timezone);
-                        Setting::set('nextcloud.url', $ncUrl);
-                        $this->saveNcServiceCredentials($ssh, $emit, $log);
-                    }
-                } else {
-                    $kcHost     = $params['kc_host'] ?? '';
-                    $kcPort     = (int) ($params['kc_port'] ?? 8080);
-                    $kcHostname = !empty($params['kc_public_url'])
-                        ? parse_url(rtrim($params['kc_public_url'], '/'), PHP_URL_HOST)
-                        : null;
-
-                    $ssh = new SshInstaller($kcHost, $params['kc_user'], $params['kc_pass']);
-                    $ssh->setOutputCallback($cb);
-                    $ssh->ensureDocker();
-                    $ssh->installKeycloak($kcAdminUsername, $kcAdminPassword, $kcPort, $kcHostname);
-
-                    $timezone = $params['timezone'] ?? 'UTC';
-
-                    if (!empty($params['install_mailcow']) && !empty($params['mc_host']) && !empty($params['mailcow_hostname'])) {
-                        $mcSsh = new SshInstaller($params['mc_host'], $params['mc_user'], $params['mc_pass']);
-                        $mcSsh->setOutputCallback($cb);
-                        $mcSsh->ensureDocker();
-                        $mcSsh->installMailcow($params['mailcow_hostname'], $timezone);
-                        Setting::set('mailcow.url', "https://{$params['mailcow_hostname']}");
-                    }
-
-                    if (!empty($params['install_nextcloud']) && !empty($params['nc_host'])) {
-                        $ncSsh = new SshInstaller($params['nc_host'], $params['nc_user'], $params['nc_pass']);
-                        $ncSsh->setOutputCallback($cb);
-                        $ncSsh->ensureDocker();
-                        $ncUrl    = rtrim($params['nc_url'], '/');
-                        $ncDomain = parse_url($ncUrl, PHP_URL_HOST);
-                        $ncSsh->installNextcloud($ncDomain, $timezone);
-                        Setting::set('nextcloud.url', $ncUrl);
-                        $this->saveNcServiceCredentials($ncSsh, $emit, $log);
-                    }
-                }
-            } catch (\Throwable $e) {
-                $emit('error', ['message' => 'Installation failed: ' . $e->getMessage()]);
-                return;
-            }
-
-            // Internal URL for health checks (always direct IP:port)
-            $kcInternalUrl = "http://{$kcHost}:{$kcPort}";
-            // Public URL saved to settings
-            $keycloakUrl   = !empty($params['kc_public_url'])
-                ? rtrim($params['kc_public_url'], '/')
-                : $kcInternalUrl;
-
-            // Wait for Keycloak — up to 5 minutes (start mode is slow; start-dev is faster).
-            // We probe /realms/master which returns 200 on all KC versions once the server
-            // is serving HTTP. The /health/ready endpoint moved to port 9000 in KC 25+.
-            $emit('log', ['line' => '→ Waiting for Keycloak to become ready (up to 5 min)...']);
-            $log[] = '→ Waiting for Keycloak to become ready...';
-            $ready = false;
-            $base  = rtrim($kcInternalUrl, '/');
-
-            for ($i = 0; $i < 60; $i++) {
-                try {
-                    $res = \Http::timeout(4)->get("{$base}/realms/master");
-                    if ($res->status() < 500) {
-                        $ready = true;
-                        break;
-                    }
-                } catch (\Throwable) {}
-                $emit('log', ['line' => "  Waiting... attempt " . ($i + 1) . " / 60 (5 s each)"]);
-                sleep(5);
-            }
-
-            if (!$ready) {
-                $emit('error', ['message' => 'Keycloak installed but did not become ready in 5 min. Check the server and try manual setup.']);
-                return;
-            }
-
-            $emit('log', ['line' => '  Keycloak is ready.']);
-            $log[] = '  Keycloak is ready.';
+            $stageIndex = array_search($stage, $stages, true);
+            $nextStage  = $stages[$stageIndex + 1] ?? null;
+            $isLast     = $nextStage === null;
 
             try {
-                $this->setupKeycloak($base, $keycloakUrl, $kcAdminUsername, $kcAdminPassword, $log, $emit);
+                match ($stage) {
+                    'keycloak'  => $this->runKeycloakStage($params, $type, $kcAdminUsername, $kcAdminPassword, $cb, $emit, $log, $retry),
+                    'mailcow'   => $this->runMailcowStage($params, $type, $cb, $retry),
+                    'nextcloud' => $this->runNextcloudStage($params, $type, $cb, $emit, $log, $retry),
+                    default     => throw new \RuntimeException("Unknown stage: {$stage}"),
+                };
             } catch (\Throwable $e) {
-                $emit('error', ['message' => 'Keycloak configuration failed: ' . $e->getMessage()]);
+                $emit('error', ['message' => ucfirst($stage) . ' installation failed: ' . $e->getMessage()]);
                 return;
             }
 
-            Cache::put("install_result:{$key}", ['log' => $log, 'kcUrl' => $keycloakUrl, 'adminUsername' => $kcAdminUsername], now()->minutes(10));
-            $emit('done', ['redirect' => route('install.done') . '?key=' . $key]);
+            Cache::put("install_log:{$key}", $log, now()->addHours(2));
+
+            if ($isLast) {
+                Cache::forget("install_params:{$key}");
+                Cache::put("install_result:{$key}", [
+                    'log'           => $log,
+                    'kcUrl'         => Setting::get('keycloak.url', ''),
+                    'adminUsername' => $kcAdminUsername,
+                ], now()->minutes(10));
+                Cache::forget("install_log:{$key}");
+                $emit('done', ['redirect' => route('install.done') . '?key=' . $key]);
+            } else {
+                $emit('done', ['next_stage' => $nextStage]);
+            }
 
         }, 200, [
             'Content-Type'      => 'text/event-stream',
@@ -308,7 +241,123 @@ class InstallController extends Controller
         return view('install.done', compact('log', 'kcUrl', 'adminUsername'));
     }
 
+    // ── Stage runners ─────────────────────────────────────────────────────────
+
+    private function runKeycloakStage(array $params, string $type, string $kcAdminUsername, string $kcAdminPassword, callable $cb, callable $emit, array &$log, bool $retry): void
+    {
+        if ($type === 'single') {
+            $kcHost     = ($params['ssh_host'] ?? '') === '__local__' ? 'host.docker.internal' : ($params['ssh_host'] ?? '');
+            $kcPort     = (int) ($params['kc_port'] ?? 8080);
+            $kcHostname = !empty($params['kc_public_url']) ? parse_url(rtrim($params['kc_public_url'], '/'), PHP_URL_HOST) : null;
+            $ssh        = new SshInstaller($kcHost, $params['ssh_user'], $params['ssh_pass']);
+        } else {
+            $kcHost     = $params['kc_host'] ?? '';
+            $kcPort     = (int) ($params['kc_port'] ?? 8080);
+            $kcHostname = !empty($params['kc_public_url']) ? parse_url(rtrim($params['kc_public_url'], '/'), PHP_URL_HOST) : null;
+            $ssh        = new SshInstaller($kcHost, $params['kc_user'], $params['kc_pass']);
+        }
+
+        $ssh->setOutputCallback($cb);
+        $ssh->ensureDocker();
+        $ssh->installKeycloak($kcAdminUsername, $kcAdminPassword, $kcPort, $kcHostname, $retry);
+
+        $kcInternalUrl = "http://{$kcHost}:{$kcPort}";
+        $keycloakUrl   = !empty($params['kc_public_url']) ? rtrim($params['kc_public_url'], '/') : $kcInternalUrl;
+        $base          = rtrim($kcInternalUrl, '/');
+
+        $emit('log', ['line' => '→ Waiting for Keycloak to become ready (up to 5 min)...']);
+        $log[] = '→ Waiting for Keycloak to become ready...';
+        $ready = false;
+
+        for ($i = 0; $i < 60; $i++) {
+            try {
+                $res = \Http::timeout(4)->get("{$base}/realms/master");
+                if ($res->status() < 500) {
+                    $ready = true;
+                    break;
+                }
+            } catch (\Throwable) {}
+            $emit('log', ['line' => "  Waiting... attempt " . ($i + 1) . " / 60 (5 s each)"]);
+            sleep(5);
+        }
+
+        if (!$ready) {
+            throw new \RuntimeException('Keycloak did not become ready in 5 min. Check the server and try manual setup.');
+        }
+
+        $emit('log', ['line' => '  Keycloak is ready.']);
+        $log[] = '  Keycloak is ready.';
+
+        $this->setupKeycloak($base, $keycloakUrl, $kcAdminUsername, $kcAdminPassword, $log, $emit);
+    }
+
+    private function runMailcowStage(array $params, string $type, callable $cb, bool $retry): void
+    {
+        $timezone = $params['timezone'] ?? 'UTC';
+
+        if ($type === 'single') {
+            $host = ($params['ssh_host'] ?? '') === '__local__' ? 'host.docker.internal' : ($params['ssh_host'] ?? '');
+            $ssh  = new SshInstaller($host, $params['ssh_user'], $params['ssh_pass']);
+        } else {
+            $ssh = new SshInstaller($params['mc_host'], $params['mc_user'], $params['mc_pass']);
+        }
+
+        $ssh->setOutputCallback($cb);
+        $ssh->ensureDocker();
+        $ssh->installMailcow($params['mailcow_hostname'], $timezone, $retry);
+        Setting::set('mailcow.url', "https://{$params['mailcow_hostname']}");
+    }
+
+    private function runNextcloudStage(array $params, string $type, callable $cb, callable $emit, array &$log, bool $retry): void
+    {
+        $timezone = $params['timezone'] ?? 'UTC';
+        $ncUrl    = rtrim($params['nc_url'], '/');
+        $ncDomain = parse_url($ncUrl, PHP_URL_HOST);
+
+        if ($type === 'single') {
+            $host = ($params['ssh_host'] ?? '') === '__local__' ? 'host.docker.internal' : ($params['ssh_host'] ?? '');
+            $ssh  = new SshInstaller($host, $params['ssh_user'], $params['ssh_pass']);
+        } else {
+            $ssh = new SshInstaller($params['nc_host'], $params['nc_user'], $params['nc_pass']);
+        }
+
+        $ssh->setOutputCallback($cb);
+        $ssh->ensureDocker();
+        $ssh->installNextcloud($ncDomain, $timezone, $retry);
+        Setting::set('nextcloud.url', $ncUrl);
+        $this->saveNcServiceCredentials($ssh, $emit, $log);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private function getStages(array $params): array
+    {
+        $type   = $params['server_type'] ?? 'single';
+        $stages = ['keycloak'];
+
+        if ($type === 'single') {
+            if (!empty($params['install_mailcow']) && !empty($params['mailcow_hostname'])) {
+                $stages[] = 'mailcow';
+            }
+            if (!empty($params['install_nextcloud'])) {
+                $stages[] = 'nextcloud';
+            }
+        } else {
+            if (!empty($params['install_mailcow']) && !empty($params['mc_host']) && !empty($params['mailcow_hostname'])) {
+                $stages[] = 'mailcow';
+            }
+            if (!empty($params['install_nextcloud']) && !empty($params['nc_host'])) {
+                $stages[] = 'nextcloud';
+            }
+        }
+
+        return $stages;
+    }
+
+    private function stageLabels(): array
+    {
+        return ['keycloak' => 'Keycloak', 'mailcow' => 'Mailcow', 'nextcloud' => 'Nextcloud'];
+    }
 
     private function setupKeycloak(string $internalBase, string $publicBase, string $adminUsername, string $adminPassword, array &$log, callable $emit): void
     {
