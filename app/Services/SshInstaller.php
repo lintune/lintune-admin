@@ -333,13 +333,16 @@ docker events \\
     --filter 'type=image' --filter 'event=pull' \\
     --format '  [pull] {{.Actor.Attributes.name}}' &
 PULL_EVENTS=\$!
-docker exec nextcloud-aio-mastercontainer \\
-    sudo -u www-data php /var/www/docker-aio/php/src/Cron/PullContainerImages.php 2>&1 || true
+docker exec -u www-data nextcloud-aio-mastercontainer \\
+    php /var/www/docker-aio/php/src/Cron/PullContainerImages.php 2>&1 || true
 sleep 2
 kill \$PULL_EVENTS 2>/dev/null; wait \$PULL_EVENTS 2>/dev/null || true
 echo "  Images pulled."
 
 # ── Phase 2: Start containers ────────────────────────────────────────────────
+# Ensure the AIO network exists before StartContainers.php tries to attach to it.
+docker network create nextcloud-aio 2>/dev/null || true
+echo "  Network nextcloud-aio ready."
 # StartContainers.php also has no output; docker events shows create/start per container.
 echo "  Starting Nextcloud AIO containers..."
 docker events \\
@@ -348,8 +351,8 @@ docker events \\
     --filter 'event=start' \\
     --format '  [{{.Action}}] {{.Actor.Attributes.name}}' &
 START_EVENTS=\$!
-docker exec nextcloud-aio-mastercontainer \\
-    sudo -u www-data php /var/www/docker-aio/php/src/Cron/StartContainers.php 2>&1 || true
+docker exec -u www-data nextcloud-aio-mastercontainer \\
+    php /var/www/docker-aio/php/src/Cron/StartContainers.php 2>&1 || true
 sleep 2
 kill \$START_EVENTS 2>/dev/null; wait \$START_EVENTS 2>/dev/null || true
 echo "  Container start triggered."
