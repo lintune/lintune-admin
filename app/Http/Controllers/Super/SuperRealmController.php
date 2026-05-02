@@ -638,8 +638,10 @@ class SuperRealmController extends Controller
                     return back()->withErrors(['error' => 'Mailcow error: ' . ($res->json()[0]['msg'] ?? $res->body())]);
                 }
                 if (!$request->filled('mailcow_custom_url')) {
-                    RealmConfig::set($realm, 'mailcow.url', Setting::get('mailcow.url', config('mailcow.url')));
-                    RealmConfig::set($realm, 'mailcow.api_key', Setting::get('mailcow.api_key', config('mailcow.api_key')), true);
+                    $mcUrl = Setting::get('mailcow.url', config('mailcow.url'));
+                    $mcKey = Setting::get('mailcow.api_key', config('mailcow.api_key'));
+                    if ($mcUrl) RealmConfig::set($realm, 'mailcow.url', $mcUrl);
+                    if ($mcKey) RealmConfig::set($realm, 'mailcow.api_key', $mcKey, true);
                 }
                 AuditLogger::log('mailcow.created', $realm);
             } else {

@@ -186,7 +186,7 @@ if [ "\$KC_READY" = "1" ]; then
         set-password \
         --username '{$adminUsername}' \
         --new-password '{$adminPassword}' \
-        --temporary false >/dev/null 2>&1 \
+        >/dev/null 2>&1 \
         && echo "  Temp-admin flag cleared." \
         || echo "  NOTE: Could not clear temp-admin flag (non-fatal)."
 else
@@ -237,7 +237,8 @@ MAILCOW_HOSTNAME={$hostname} MAILCOW_TZ={$timezone} bash generate_config.sh
 # Inject API key and IP allowlist before containers start so the API is
 # immediately secured; 172.16.0.0/12 covers all default Docker bridge ranges.
 MC_API_KEY=\$(tr -dc 'A-Z0-9' < /dev/urandom | head -c 30 | sed 's/.\{6\}/&-/g' | sed 's/-\$//')
-printf '\nAPI_KEY=%s\nAPI_ALLOW_FROM=127.0.0.1,172.16.0.0/12\n' "\$MC_API_KEY" >> mailcow.conf
+printf '\nAPI_KEY=%s\nAPI_ALLOW_FROM=127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16\n' "\$MC_API_KEY" >> mailcow.conf
+echo "CAPTURE:mailcow_api_key:\$MC_API_KEY"
 echo "  Mailcow API key written to mailcow.conf."
 # Pull each service individually so the terminal shows clear per-image progress.
 echo "  Pulling Mailcow images (one by one)..."
