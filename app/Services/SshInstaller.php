@@ -253,7 +253,7 @@ echo "  Mailcow started."
 BASH);
     }
 
-    public function installNextcloud(string $domain, string $timezone = 'UTC', bool $clean = false): void
+    public function installNextcloud(string $domain, string $timezone = 'UTC', bool $clean = false, string $adminUsername = '', string $adminPassword = ''): void
     {
         $this->emit('→ Installing Nextcloud AIO...');
         if ($clean) {
@@ -288,6 +288,9 @@ BASH);
             '  nextcloud_aio_mastercontainer:',
             '    name: nextcloud_aio_mastercontainer',
         ]);
+
+        $b64AdminUser = base64_encode($adminUsername);
+        $b64AdminPass = base64_encode($adminPassword);
 
         $this->execScript(<<<BASH
 # Ensure required tools (wget for polling, jq for JSON manipulation)
@@ -400,6 +403,17 @@ docker exec -u www-data \\
     php occ user:add --password-from-env --display-name="Lintune Service" --group="admin" lintune-svc
 echo "CAPTURE:nc_svc_pass:\$NC_SVC_PASS"
 echo "  Service account 'lintune-svc' created."
+
+# ── Phase 5: Create MSP operator account ─────────────────────────────────────
+NC_ADMIN_USER=\$(printf '%s' '{$b64AdminUser}' | base64 -d)
+NC_ADMIN_PASS=\$(printf '%s' '{$b64AdminPass}' | base64 -d)
+if [ -n "\$NC_ADMIN_USER" ] && [ -n "\$NC_ADMIN_PASS" ]; then
+    docker exec -u www-data \\
+        -e OC_PASS="\$NC_ADMIN_PASS" \\
+        nextcloud-aio-nextcloud \\
+        php occ user:add --password-from-env --display-name="\$NC_ADMIN_USER" --group="admin" "\$NC_ADMIN_USER"
+    echo "  Operator account '\$NC_ADMIN_USER' created."
+fi
 echo "  Nextcloud AIO setup complete. Domain: {$domain}"
 BASH);
     }

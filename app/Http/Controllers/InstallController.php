@@ -12,9 +12,19 @@ class InstallController extends Controller
 {
     public function __construct()
     {
-        if (config('setup.complete')) {
+        if ($this->isSetupComplete()) {
             abort(404);
         }
+    }
+
+    private function isSetupComplete(): bool
+    {
+        if (config('setup.complete')) {
+            return true;
+        }
+
+        $env = @file_get_contents(base_path('.env'));
+        return $env !== false && (bool) preg_match('/^SETUP_COMPLETE=true$/m', $env);
     }
 
     // ── Welcome ───────────────────────────────────────────────────────────────
@@ -250,6 +260,7 @@ class InstallController extends Controller
         // done page itself is accessible (stream writes it → constructor
         // sees it on the very next request → abort(404) before done() runs).
         $this->writeEnv(['SETUP_COMPLETE' => 'true']);
+        Setting::set('wizard.complete', '1');
 
         return view('install.done', compact('log', 'kcUrl', 'adminUsername'));
     }
@@ -342,7 +353,7 @@ class InstallController extends Controller
 
         $ssh->setOutputCallback($cb);
         $ssh->ensureDocker();
-        $ssh->installNextcloud($ncDomain, $timezone, $retry);
+        $ssh->installNextcloud($ncDomain, $timezone, $retry, $params['admin_username'] ?? '', $params['admin_password'] ?? '');
         Setting::set('nextcloud.url', $ncUrl);
         if ($aioPass = $ssh->getCaptured('nc_aio_pass')) {
             Setting::set('nextcloud.aio_passphrase', $aioPass, encrypted: true);
@@ -351,7 +362,7 @@ class InstallController extends Controller
             Setting::set('nextcloud.admin_password', $adminPass, encrypted: true);
         }
         if ($svcPass = $ssh->getCaptured('nc_svc_pass')) {
-            Setting::set('nextcloud.service_username', 'lintune-svc');
+            Setting::set('nextcloud.service_user', 'lintune-svc');
             Setting::set('nextcloud.service_password', $svcPass, encrypted: true);
         }
     }
