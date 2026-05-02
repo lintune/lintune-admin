@@ -255,18 +255,22 @@ class SuperRealmController extends Controller
             'trustEmail'                => true,
             'firstBrokerLoginFlowAlias' => 'first broker login',
             'config' => [
-                'clientId'          => 'broker-realm-client',
-                'clientSecret'      => $secret,
-                'authorizationUrl'  => "{$base}/realms/{$realm}/protocol/openid-connect/auth",
-                'tokenUrl'          => "{$base}/realms/{$realm}/protocol/openid-connect/token",
-                'jwksUrl'           => "{$base}/realms/{$realm}/protocol/openid-connect/certs",
-                'logoutUrl'         => "{$base}/realms/{$realm}/protocol/openid-connect/logout",
-                'userInfoUrl'       => "{$base}/realms/{$realm}/protocol/openid-connect/userinfo",
-                'issuer'            => "{$base}/realms/{$realm}",
-                'validateSignature' => 'true',
-                'useJwksUrl'        => 'true',
-                'pkceEnabled'       => 'false',
-                'syncMode'          => 'IMPORT',
+                'clientId'                   => 'broker-realm-client',
+                'clientSecret'               => $secret,
+                'authorizationUrl'           => "{$base}/realms/{$realm}/protocol/openid-connect/auth",
+                'tokenUrl'                   => "{$base}/realms/{$realm}/protocol/openid-connect/token",
+                'jwksUrl'                    => "{$base}/realms/{$realm}/protocol/openid-connect/certs",
+                'logoutUrl'                  => "{$base}/realms/{$realm}/protocol/openid-connect/logout",
+                'userInfoUrl'                => "{$base}/realms/{$realm}/protocol/openid-connect/userinfo",
+                'issuer'                     => "{$base}/realms/{$realm}",
+                'validateSignature'          => 'true',
+                'useJwksUrl'                 => 'true',
+                'pkceEnabled'               => 'false',
+                'syncMode'                  => 'IMPORT',
+                // Tells the `organization` authenticator to redirect users whose email
+                // domain matches this IdP's linked Organization, rather than blocking
+                // them with "you don't have an account yet".
+                'redirectOnEmailDomainMatch' => 'true',
             ],
         ]);
 
@@ -293,10 +297,23 @@ class SuperRealmController extends Controller
             'enabled' => true,
         ]);
         if ($orgRes->successful()) {
-            $orgId = basename($orgRes->header('Location'));
+            // Prefer the Location header; fall back to a search in case of trailing-slash issues.
+            $orgId = basename(rtrim($orgRes->header('Location'), '/'));
+            if (!$orgId || strlen($orgId) < 10) {
+                $orgs  = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/organizations", ['search' => $realm])->json();
+                $orgId = collect((array) $orgs)->firstWhere('alias', $realm)['id'] ?? null;
+            }
             if ($orgId) {
+                // Fetch the IdP representation so we can pass it as the PUT body.
+                // Sending just [] links the IdP but loses org-context config;
+                // sending the full representation lets Keycloak store the
+                // `redirectOnEmailDomainMatch` flag in the org↔IdP association.
+                $idpRep = \Http::withToken($token)
+                    ->get("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}")
+                    ->json() ?? [];
                 \Http::withToken($token)->put(
-                    "{$base}/admin/realms/{$brokerRealm}/organizations/{$orgId}/identity-providers/{$realm}"
+                    "{$base}/admin/realms/{$brokerRealm}/organizations/{$orgId}/identity-providers/{$realm}",
+                    $idpRep
                 );
             }
         }

@@ -123,10 +123,13 @@ Configured during the Keycloak install stage via `configureBrokerHomeIdpDiscover
 **How it works:**
 1. Keycloak Organizations is enabled on the broker realm.
 2. A custom browser flow `broker-home-idp-discovery` is created with three ALTERNATIVE executors: `auth-cookie` → `identity-provider-redirector` → `organization`.
-3. The `organization` executor is immediately configured with `useHomeIdpDiscovery: true` via `POST /authentication/executions/{id}/config`. **Without this the authenticator defaults to membership-check mode** and shows "you don't have an account yet" instead of redirecting — even when an Organization with a linked IdP exists.
-4. The broker realm's browser login is bound to this flow.
-5. When a realm is provisioned (`setupBrokerFederation`), a Keycloak Organization is created in the broker realm with `realm` as both the name/alias and the email domain. The tenant IdP is linked to that Organization.
-6. At login time, the `organization` authenticator shows an email form, extracts the domain (e.g. `company.com`), finds the Organization for `company.com`, and automatically redirects to its linked IdP — no manual IdP picker, no membership check.
+3. The broker realm's browser login is bound to this flow.
+4. When a realm is provisioned (`setupBrokerFederation`), a Keycloak Organization is created in the broker realm with `realm` as both the name/alias and the email domain. The IdP is linked to the Organization via `PUT /organizations/{id}/identity-providers/{alias}` with the **full IdP representation as the body** (not `[]`), because that's what persists the org-context config.
+5. At login time, the `organization` authenticator shows an email form, extracts the domain, finds the Organization, and automatically redirects to its linked IdP — no manual IdP picker, no membership check required.
+
+**Key IdP config: `redirectOnEmailDomainMatch: true`** — set on the IdP at creation time and passed again in the org link body. Without this flag, the `organization` authenticator finds the org and the linked IdP but blocks the user with "Your email domain matches an organization but you don't have an account yet" instead of redirecting.
+
+**Do NOT add execution config to the `organization` authenticator.** Keycloak 26 does not have a `useHomeIdpDiscovery` authenticator config property. Adding one causes the authenticator to fall through instead of redirecting, resulting in "Invalid username or password".
 
 **Realm provisioning adds:**
 - An OIDC IdP in the broker realm pointing at the tenant realm (existing `setupBrokerFederation`)
