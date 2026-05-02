@@ -58,7 +58,7 @@ database/migrations/          — ALL migrations live here (never in lintune-das
 The installer runs before SETUP_COMPLETE is set and is blocked afterward.
 
 **Stages** — keycloak is always first; mailcow and nextcloud are optional depending on what the operator chose on the configure screen:
-1. `keycloak` — ensureDocker → installKeycloak → wait for KC ready → setupKeycloak (OIDC client, broker realm, service account, writes .env)
+1. `keycloak` — ensureDocker → installKeycloak → wait for KC ready → setupKeycloak (OIDC client, broker realm, service account, writes .env) → **configureBrokerHomeIdpDiscovery** (Organizations enabled, `broker-home-idp-discovery` browser flow created and bound)
 2. `mailcow` — ensureDocker → installMailcow (injects API_KEY + API_ALLOW_FROM into mailcow.conf, captures key) → postConfigureMailcow (new superadmin via DB, delete default admin) → Setting::set mailcow.url + mailcow.api_key (encrypted)
 3. `nextcloud` — ensureDocker → installNextcloud (5-phase, creates lintune-svc + operator accounts) → create `nextcloud` OIDC client in Keycloak broker realm → configureNextcloudOidc (installs user_oidc app, runs occ user_oidc:provider) → Setting::set nextcloud credentials + oidc_client_id + oidc_client_secret
 
@@ -115,6 +115,28 @@ loading the file-written `SETUP_COMPLETE=true` on the same container run.
 - `postConfigureMailcow($adminUsername, $adminPassword)` — runs after `installMailcow()`; polls for the default `admin` row in MySQL (polling on admin row existence, not just MySQL ping — Mailcow's PHP init scripts run after MySQL accepts connections), hashes the password via `doveadm pw -s SSHA256` (dovecot-mailcow container, `< /dev/null` required to prevent heredoc stdin hang), inserts the new superadmin, then deletes the default admin and all associated rows (`tfa`, `domain_admins`, `admin`). No API involvement — pure DB operations.
   > **TODO (pre-production):** The Mailcow superadmin currently reuses the lintune-admin operator credentials (`admin_username` / `admin_password` from the install form). For production, `postConfigureMailcow` should generate its own random password and store it encrypted in `settings` (like Nextcloud does), so the Mailcow web UI is not protected by the same secret as the lintune-admin panel.
 - `$clean=true` wipes the install directory (docker compose down + rm -rf) before reinstalling. Used when the installer frontend sends `?retry=1`.
+
+## Home IdP Discovery (broker realm)
+
+Configured during the Keycloak install stage via `configureBrokerHomeIdpDiscovery()` in `InstallController`.
+
+**How it works:**
+1. Keycloak Organizations is enabled on the broker realm.
+2. A custom browser flow `broker-home-idp-discovery` is created with three ALTERNATIVE executors: `auth-cookie` → `identity-provider-redirector` → `organization`.
+3. The broker realm's browser login is bound to this flow.
+4. When a realm is provisioned (`setupBrokerFederation`), a Keycloak Organization is created in the broker realm with `realm` as both the name/alias and the email domain. The tenant IdP is linked to that Organization.
+5. At login time, the `organization` authenticator shows an email form, extracts the domain (e.g. `company.com`), finds the Organization for `company.com`, and automatically redirects to its linked IdP — no manual IdP picker.
+
+**Realm provisioning adds:**
+- An OIDC IdP in the broker realm pointing at the tenant realm (existing `setupBrokerFederation`)
+- A Keycloak Organization in the broker realm with `domain = realm` (e.g. `company.com`)
+- The IdP linked to that Organization via `PUT /organizations/{id}/identity-providers/{alias}`
+
+**Realm deletion cleans up:**
+- The Organization is deleted from the broker realm (which also unlinks the IdP)
+- The IdP instance is deleted from the broker realm
+
+**Non-fatal:** if Keycloak does not support Organizations (pre-25), the setup logs a warning and continues. The rest of the install still succeeds; Home IdP Discovery simply won't be active.
 
 ## Middleware
 - `RequireSuperAuth` — checks `session('super_access_token')`; redirects to super.login if absent.

@@ -282,6 +282,24 @@ class SuperRealmController extends Controller
                 'user.attribute' => 'email',
             ],
         ]);
+
+        // Create an Organization in the broker realm for this email domain and link the IdP
+        // to it. The broker realm's `organization` authenticator uses this to auto-route
+        // logins from @{realm} addresses to the correct IdP (Home IdP Discovery).
+        $orgRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/organizations", [
+            'name'    => $realm,
+            'alias'   => $realm,
+            'domains' => [['name' => $realm, 'verified' => false]],
+            'enabled' => true,
+        ]);
+        if ($orgRes->successful()) {
+            $orgId = basename($orgRes->header('Location'));
+            if ($orgId) {
+                \Http::withToken($token)->put(
+                    "{$base}/admin/realms/{$brokerRealm}/organizations/{$orgId}/identity-providers/{$realm}"
+                );
+            }
+        }
     }
 
     public function toggle(string $realm)
@@ -715,6 +733,21 @@ class SuperRealmController extends Controller
 
         if ($request->boolean('delete_mailcow') && Setting::get('mailcow.url', config('mailcow.url')) && Setting::get('mailcow.api_key', config('mailcow.api_key'))) {
             \Http::withHeaders($this->mailcowHeaders($realm))->post("{$this->mailcowBase($realm)}/delete/domain", [$realm]);
+        }
+
+        // Remove the IdP and Organization from the broker realm so @{realm} addresses no
+        // longer route anywhere. Non-fatal — realm is already deleted from Keycloak.
+        $brokerRealm = config('keycloak.broker_realm');
+        if ($brokerRealm) {
+            $kcBase = $this->baseUrl();
+            // Delete the Organization (also unlinks the IdP automatically)
+            $orgs = \Http::withToken($token)->get("{$kcBase}/admin/realms/{$brokerRealm}/organizations", ['search' => $realm])->json();
+            $org  = collect((array) $orgs)->firstWhere('alias', $realm);
+            if ($org) {
+                \Http::withToken($token)->delete("{$kcBase}/admin/realms/{$brokerRealm}/organizations/{$org['id']}");
+            }
+            // Delete the IdP instance itself from the broker realm
+            \Http::withToken($token)->delete("{$kcBase}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}");
         }
 
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' deleted.");

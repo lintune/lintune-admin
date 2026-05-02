@@ -524,6 +524,17 @@ class InstallController extends Controller
             $emit('log', ['line' => $msg]);
         }
 
+        // Enable Organizations + configure Home IdP Discovery browser flow on the broker realm.
+        // Non-fatal: log a warning if this fails (requires Keycloak 25+).
+        try {
+            $this->configureBrokerHomeIdpDiscovery($internalBase, $token, $brokerRealm);
+            $msg = '→ Broker realm configured for Home IdP Discovery.';
+        } catch (\Throwable $e) {
+            $msg = '→ NOTE: Home IdP Discovery setup skipped: ' . $e->getMessage();
+        }
+        $log[] = $msg;
+        $emit('log', ['line' => $msg]);
+
         // Create lintune-service account
         $serviceUsername = 'lintune-service';
         $servicePassword = Str::password(32, symbols: false);
@@ -577,6 +588,72 @@ class InstallController extends Controller
         $msg   = '→ Configuration saved.';
         $log[] = $msg;
         $emit('log', ['line' => $msg]);
+    }
+
+    /**
+     * Enable Keycloak Organizations on the broker realm and create a custom browser
+     * authentication flow that uses the built-in `organization` authenticator for
+     * automatic email-domain → IdP routing (Home IdP Discovery).
+     *
+     * Flow: Cookie (ALTERNATIVE) → IdP Redirector (ALTERNATIVE) → organization (ALTERNATIVE)
+     *
+     * The `organization` authenticator shows an email form, extracts the domain, finds the
+     * matching Organization, and redirects to its linked IdP — no manual IdP selection.
+     */
+    private function configureBrokerHomeIdpDiscovery(string $base, string $token, string $brokerRealm): void
+    {
+        // Enable Organizations feature on the broker realm
+        $res = \Http::withToken($token)->put("{$base}/admin/realms/{$brokerRealm}", [
+            'organizationsEnabled' => true,
+        ]);
+        if ($res->failed()) {
+            throw new \RuntimeException("Failed to enable Organizations: " . $res->body());
+        }
+
+        // Create (or replace) a custom browser flow for the broker realm
+        $flowAlias  = 'broker-home-idp-discovery';
+        $existFlows = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/authentication/flows")->json();
+        $existFlow  = collect((array) $existFlows)->firstWhere('alias', $flowAlias);
+        if ($existFlow) {
+            \Http::withToken($token)->delete("{$base}/admin/realms/{$brokerRealm}/authentication/flows/{$existFlow['id']}");
+        }
+
+        $flowRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/authentication/flows", [
+            'alias'      => $flowAlias,
+            'providerId' => 'basic-flow',
+            'topLevel'   => true,
+            'builtIn'    => false,
+        ]);
+        if ($flowRes->failed()) {
+            throw new \RuntimeException("Failed to create auth flow: " . $flowRes->body());
+        }
+
+        // Add Cookie, Identity Provider Redirector, and Organization authenticators
+        foreach (['auth-cookie', 'identity-provider-redirector', 'organization'] as $provider) {
+            $addRes = \Http::withToken($token)->post(
+                "{$base}/admin/realms/{$brokerRealm}/authentication/flows/{$flowAlias}/executions/execution",
+                ['provider' => $provider]
+            );
+            if ($addRes->failed()) {
+                throw new \RuntimeException("Failed to add '{$provider}' executor: " . $addRes->body());
+            }
+        }
+
+        // Set all executions to ALTERNATIVE so each step is tried in order, not required
+        $executions = \Http::withToken($token)
+            ->get("{$base}/admin/realms/{$brokerRealm}/authentication/flows/{$flowAlias}/executions")
+            ->json();
+        foreach ((array) $executions as $exec) {
+            \Http::withToken($token)->put(
+                "{$base}/admin/realms/{$brokerRealm}/authentication/flows/{$flowAlias}/executions",
+                array_merge($exec, ['requirement' => 'ALTERNATIVE'])
+            );
+        }
+
+        // Bind the broker realm's browser login to this flow
+        \Http::withToken($token)->put("{$base}/admin/realms/{$brokerRealm}", [
+            'browserFlow' => $flowAlias,
+        ]);
     }
 
     private function writeInstallLog(string $key, string $stage, array $lines, ?string $error): void
