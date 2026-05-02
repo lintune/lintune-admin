@@ -248,9 +248,7 @@ class SuperRealmController extends Controller
 
         if (!$secret) return;
 
-        // Create the Organization first so we have its ID to embed in the IdP.
-        // In Keycloak 26 the IdP↔Org link is made by setting `organizationId` as a
-        // top-level field on the IdP — there is no separate link endpoint (PUT returns 405).
+        // Create the Organization first so we have its ID for the link step below.
         $orgRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/organizations", [
             'name'    => $realm,
             'alias'   => $realm,
@@ -267,13 +265,17 @@ class SuperRealmController extends Controller
             }
         }
 
-        // Create the OIDC IdP in the broker realm.
-        // `organizationId`                        — links this IdP to the Organization (top-level field).
-        // `hideOnLogin`                            — hides the button from the login page for non-matching domains.
-        // `kc.org.domain`                          — the email domain this IdP handles.
-        // `kc.org.broker.redirect.mode.email-matches` — the actual "redirect on domain match" toggle.
-        // `loginHint`                              — forwards the collected email as login_hint so the
-        //                                           tenant realm login page pre-fills the username field.
+        // Create the OIDC IdP in the broker realm — WITHOUT organizationId.
+        // Do NOT set organizationId here: Keycloak stores it but does NOT add the internal
+        // `kc.org` config key, so GET /organizations/{id}/identity-providers returns [] and
+        // the `organization` authenticator never finds the IdP for domain-based routing.
+        // The real link is made below via POST /organizations/{id}/identity-providers.
+        //
+        // `hideOnLogin`                            — hides manual button from login page.
+        // `kc.org.domain`                          — email domain this IdP handles.
+        // `kc.org.broker.redirect.mode.email-matches` — triggers auto-redirect on domain match.
+        // `loginHint`                              — forwards collected email to tenant realm
+        //                                           so the username field is pre-filled.
         $idpPayload = [
             'alias'                     => $realm,
             'displayName'               => $realm,
@@ -301,13 +303,21 @@ class SuperRealmController extends Controller
             ],
         ];
 
-        if ($orgId) {
-            $idpPayload['organizationId'] = $orgId;
-        }
-
         $idpRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances", $idpPayload);
 
         if ($idpRes->failed()) return;
+
+        // Link the IdP to the Organization.
+        // POST body must be a JSON string (the alias) — this sets both `organizationId` on
+        // the IdP AND the internal `kc.org` config key that the `organization` authenticator
+        // reads when routing by email domain. Setting organizationId only during IdP creation
+        // (above) skips the kc.org key and leaves GET /organizations/{id}/identity-providers
+        // returning [], so the authenticator never finds the IdP.
+        if ($orgId) {
+            \Http::withToken($token)
+                ->withBody(json_encode($realm), 'application/json')
+                ->post("{$base}/admin/realms/{$brokerRealm}/organizations/{$orgId}/identity-providers");
+        }
 
         \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers", [
             'name'                   => 'email',

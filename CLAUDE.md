@@ -111,7 +111,7 @@ loading the file-written `SETUP_COMPLETE=true` on the same container run.
   5. **Operator account** — creates the MSP operator's own Nextcloud account (same username/password as the install form) via `occ user:add --group="admin"`.
   
   `InstallController::runNextcloudStage()` saves captured values to `settings` encrypted: `nextcloud.aio_passphrase`, `nextcloud.admin_password`, `nextcloud.service_user` (`lintune-svc`), `nextcloud.service_password`. Then creates a `nextcloud` OIDC client in Keycloak's broker realm and calls `configureNextcloudOidc`. Saves `nextcloud.oidc_client_id` and `nextcloud.oidc_client_secret` to `settings`.
-- `configureNextcloudOidc($kcBaseUrl, $brokerRealm, $clientId, $clientSecret)` — installs the `user_oidc` app via `occ app:install user_oidc` (falls back to `app:enable` if already installed), then runs `occ user_oidc:provider Keycloak` with the discovery URI pointing at `{kcBaseUrl}/realms/{brokerRealm}/.well-known/openid-configuration`. Credentials injected via base64.
+- `configureNextcloudOidc($kcBaseUrl, $brokerRealm, $clientId, $clientSecret)` — installs the `user_oidc` app via `occ app:install user_oidc` (falls back to `app:enable` if already installed), then runs `occ user_oidc:provider Keycloak` with the discovery URI pointing at `{kcBaseUrl}/realms/{brokerRealm}/.well-known/openid-configuration`. Credentials injected via base64. Key flags: `--mapping-uid=email` (use email claim as NC user ID, not the Keycloak UUID sub claim), `--unique-uid=0` (no provider-name suffix appended), `--auto-provision=0` (no auto account creation — users must be pre-created via OCS API). The NC user ID therefore equals the user's email address, matching what `UserController::toggleNextcloud()` creates.
 - `postConfigureMailcow($adminUsername, $adminPassword)` — runs after `installMailcow()`; polls for the default `admin` row in MySQL (polling on admin row existence, not just MySQL ping — Mailcow's PHP init scripts run after MySQL accepts connections), hashes the password via `doveadm pw -s SSHA256` (dovecot-mailcow container, `< /dev/null` required to prevent heredoc stdin hang), inserts the new superadmin, then deletes the default admin and all associated rows (`tfa`, `domain_admins`, `admin`). No API involvement — pure DB operations.
   > **TODO (pre-production):** The Mailcow superadmin currently reuses the lintune-admin operator credentials (`admin_username` / `admin_password` from the install form). For production, `postConfigureMailcow` should generate its own random password and store it encrypted in `settings` (like Nextcloud does), so the Mailcow web UI is not protected by the same secret as the lintune-admin panel.
 - `$clean=true` wipes the install directory (docker compose down + rm -rf) before reinstalling. Used when the installer frontend sends `?retry=1`.
@@ -124,17 +124,26 @@ Configured during the Keycloak install stage via `configureBrokerHomeIdpDiscover
 1. Keycloak Organizations is enabled on the broker realm.
 2. A custom browser flow `broker-home-idp-discovery` is created with three ALTERNATIVE executors: `auth-cookie` → `identity-provider-redirector` → `organization`.
 3. The broker realm's browser login is bound to this flow.
-4. When a realm is provisioned (`setupBrokerFederation`), a Keycloak Organization is created in the broker realm with `realm` as both the name/alias and the email domain. The IdP is linked to the Organization via `PUT /organizations/{id}/identity-providers/{alias}` with the **full IdP representation as the body** (not `[]`), because that's what persists the org-context config.
+4. When a realm is provisioned (`setupBrokerFederation`), a Keycloak Organization is created in the broker realm with `realm` as both the name/alias and the email domain. Then the IdP is created (without `organizationId`), and finally linked to the org via `POST /organizations/{id}/identity-providers` with the alias as a JSON string body.
 5. At login time, the `organization` authenticator shows an email form, extracts the domain, finds the Organization, and automatically redirects to its linked IdP — no manual IdP picker, no membership check required.
 
-**Key IdP config: `redirectOnEmailDomainMatch: true`** — set on the IdP at creation time and passed again in the org link body. Without this flag, the `organization` authenticator finds the org and the linked IdP but blocks the user with "Your email domain matches an organization but you don't have an account yet" instead of redirecting.
+**IdP→Org linking — critical details:**
+- Do NOT set `organizationId` on the IdP during creation. Keycloak stores it as a representation field but does NOT add the internal `kc.org` config key that the `organization` authenticator reads. `GET /organizations/{id}/identity-providers` returns `[]` and routing never fires.
+- The correct link is `POST /admin/realms/{brokerRealm}/organizations/{orgId}/identity-providers` with body `"alias"` (a quoted JSON string — e.g. `"nexed.tech"`). This sets both `organizationId` on the IdP AND the `kc.org` config key.
+- `PUT /organizations/{id}/identity-providers/{alias}` returns 405 in KC26 — endpoint does not exist.
+
+**Key IdP config:**
+- `kc.org.domain: realm` — email domain this IdP handles.
+- `kc.org.broker.redirect.mode.email-matches: true` — triggers automatic redirect when the typed email domain matches. Without this, the authenticator shows "Your email domain matches an organization but you don't have an account yet" instead of redirecting.
+- `loginHint: true` — forwards the collected email as `login_hint` to the tenant realm so the username field is pre-filled.
+- `hideOnLogin: true` — hides the manual IdP button from the login page (routing is automatic).
 
 **Do NOT add execution config to the `organization` authenticator.** Keycloak 26 does not have a `useHomeIdpDiscovery` authenticator config property. Adding one causes the authenticator to fall through instead of redirecting, resulting in "Invalid username or password".
 
 **Realm provisioning adds:**
-- An OIDC IdP in the broker realm pointing at the tenant realm (existing `setupBrokerFederation`)
+- An OIDC IdP in the broker realm pointing at the tenant realm
 - A Keycloak Organization in the broker realm with `domain = realm` (e.g. `company.com`)
-- The IdP linked to that Organization via `PUT /organizations/{id}/identity-providers/{alias}`
+- The IdP linked to that Organization via `POST /organizations/{orgId}/identity-providers` with body `"realm"` (JSON string)
 
 **Realm deletion cleans up:**
 - The Organization is deleted from the broker realm (which also unlinks the IdP)

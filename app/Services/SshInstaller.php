@@ -444,7 +444,10 @@ docker exec -u www-data nextcloud-aio-nextcloud php occ user_oidc:provider Keycl
     --clientsecret="\$NC_CLIENT_SECRET" \
     --discoveryuri="\$NC_DISCOVERY_URI" \
     --check-bearer=1 \
-    --send-id-token-hint=1 < /dev/null
+    --send-id-token-hint=1 \
+    --mapping-uid=email \
+    --unique-uid=0 \
+    --auto-provision=0 < /dev/null
 echo "  OpenID Connect configured."
 BASH);
     }
