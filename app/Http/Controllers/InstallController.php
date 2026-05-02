@@ -650,6 +650,24 @@ class InstallController extends Controller
             );
         }
 
+        // The `organization` authenticator defaults to membership-check mode: it shows
+        // "you don't have an account yet" for users who are not org members. Enable
+        // Home IdP Discovery so it instead auto-redirects to the org's linked IdP when
+        // the email domain matches — no membership required, no manual IdP selection.
+        $executions = \Http::withToken($token)
+            ->get("{$base}/admin/realms/{$brokerRealm}/authentication/flows/{$flowAlias}/executions")
+            ->json();
+        $orgExec = collect((array) $executions)->firstWhere('providerId', 'organization');
+        if ($orgExec) {
+            \Http::withToken($token)->post(
+                "{$base}/admin/realms/{$brokerRealm}/authentication/executions/{$orgExec['id']}/config",
+                [
+                    'alias'  => 'home-idp-discovery',
+                    'config' => ['useHomeIdpDiscovery' => 'true'],
+                ]
+            );
+        }
+
         // Bind the broker realm's browser login to this flow
         \Http::withToken($token)->put("{$base}/admin/realms/{$brokerRealm}", [
             'browserFlow' => $flowAlias,

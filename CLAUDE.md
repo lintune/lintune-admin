@@ -123,9 +123,10 @@ Configured during the Keycloak install stage via `configureBrokerHomeIdpDiscover
 **How it works:**
 1. Keycloak Organizations is enabled on the broker realm.
 2. A custom browser flow `broker-home-idp-discovery` is created with three ALTERNATIVE executors: `auth-cookie` → `identity-provider-redirector` → `organization`.
-3. The broker realm's browser login is bound to this flow.
-4. When a realm is provisioned (`setupBrokerFederation`), a Keycloak Organization is created in the broker realm with `realm` as both the name/alias and the email domain. The tenant IdP is linked to that Organization.
-5. At login time, the `organization` authenticator shows an email form, extracts the domain (e.g. `company.com`), finds the Organization for `company.com`, and automatically redirects to its linked IdP — no manual IdP picker.
+3. The `organization` executor is immediately configured with `useHomeIdpDiscovery: true` via `POST /authentication/executions/{id}/config`. **Without this the authenticator defaults to membership-check mode** and shows "you don't have an account yet" instead of redirecting — even when an Organization with a linked IdP exists.
+4. The broker realm's browser login is bound to this flow.
+5. When a realm is provisioned (`setupBrokerFederation`), a Keycloak Organization is created in the broker realm with `realm` as both the name/alias and the email domain. The tenant IdP is linked to that Organization.
+6. At login time, the `organization` authenticator shows an email form, extracts the domain (e.g. `company.com`), finds the Organization for `company.com`, and automatically redirects to its linked IdP — no manual IdP picker, no membership check.
 
 **Realm provisioning adds:**
 - An OIDC IdP in the broker realm pointing at the tenant realm (existing `setupBrokerFederation`)
