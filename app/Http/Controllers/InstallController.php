@@ -513,8 +513,9 @@ class InstallController extends Controller
         if (!$brokerRealm) {
             $brokerRealm = 'broker-' . Str::lower(Str::random(8));
             $brokerRes   = \Http::withToken($token)->post("{$internalBase}/admin/realms", [
-                'realm'   => $brokerRealm,
-                'enabled' => true,
+                'realm'       => $brokerRealm,
+                'displayName' => $publicBase,
+                'enabled'     => true,
             ]);
             if ($brokerRes->failed()) {
                 throw new \RuntimeException('Failed to create broker realm: ' . $brokerRes->body());
