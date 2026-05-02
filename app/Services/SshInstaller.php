@@ -446,9 +446,7 @@ docker exec -u www-data nextcloud-aio-nextcloud php occ user_oidc:provider Keycl
     --check-bearer=1 \
     --send-id-token-hint=1 \
     --mapping-uid=email \
-    --unique-uid=0 \
-    --group-restrict-login-to-whitelist=1 \
-    --group-whitelist-regex='.*' < /dev/null
+    --unique-uid=0 < /dev/null
 echo "  OpenID Connect configured."
 BASH);
     }
