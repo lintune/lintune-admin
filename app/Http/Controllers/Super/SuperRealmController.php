@@ -230,6 +230,7 @@ class SuperRealmController extends Controller
 
     private function setupBrokerFederation(string $base, string $token, string $realm, string $brokerRealm): void
     {
+        // Create the OIDC client in the tenant realm that the broker IdP will use.
         $clientRes = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/clients", [
             'clientId'                  => 'broker-realm-client',
             'enabled'                   => true,
@@ -247,32 +248,64 @@ class SuperRealmController extends Controller
 
         if (!$secret) return;
 
-        $idpRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances", [
+        // Create the Organization first so we have its ID to embed in the IdP.
+        // In Keycloak 26 the IdP↔Org link is made by setting `organizationId` as a
+        // top-level field on the IdP — there is no separate link endpoint (PUT returns 405).
+        $orgRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/organizations", [
+            'name'    => $realm,
+            'alias'   => $realm,
+            'domains' => [['name' => $realm, 'verified' => false]],
+            'enabled' => true,
+        ]);
+
+        $orgId = null;
+        if ($orgRes->successful()) {
+            $orgId = basename(rtrim($orgRes->header('Location'), '/'));
+            if (!$orgId || strlen($orgId) < 10) {
+                $orgs  = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/organizations", ['search' => $realm])->json();
+                $orgId = collect((array) $orgs)->firstWhere('alias', $realm)['id'] ?? null;
+            }
+        }
+
+        // Create the OIDC IdP in the broker realm.
+        // `organizationId`                        — links this IdP to the Organization (top-level field).
+        // `hideOnLogin`                            — hides the button from the login page for non-matching domains.
+        // `kc.org.domain`                          — the email domain this IdP handles.
+        // `kc.org.broker.redirect.mode.email-matches` — the actual "redirect on domain match" toggle.
+        // `loginHint`                              — forwards the collected email as login_hint so the
+        //                                           tenant realm login page pre-fills the username field.
+        $idpPayload = [
             'alias'                     => $realm,
             'displayName'               => $realm,
             'providerId'                => 'oidc',
             'enabled'                   => true,
             'trustEmail'                => true,
+            'hideOnLogin'               => true,
             'firstBrokerLoginFlowAlias' => 'first broker login',
             'config' => [
-                'clientId'                   => 'broker-realm-client',
-                'clientSecret'               => $secret,
-                'authorizationUrl'           => "{$base}/realms/{$realm}/protocol/openid-connect/auth",
-                'tokenUrl'                   => "{$base}/realms/{$realm}/protocol/openid-connect/token",
-                'jwksUrl'                    => "{$base}/realms/{$realm}/protocol/openid-connect/certs",
-                'logoutUrl'                  => "{$base}/realms/{$realm}/protocol/openid-connect/logout",
-                'userInfoUrl'                => "{$base}/realms/{$realm}/protocol/openid-connect/userinfo",
-                'issuer'                     => "{$base}/realms/{$realm}",
-                'validateSignature'          => 'true',
-                'useJwksUrl'                 => 'true',
-                'pkceEnabled'               => 'false',
-                'syncMode'                  => 'IMPORT',
-                // Tells the `organization` authenticator to redirect users whose email
-                // domain matches this IdP's linked Organization, rather than blocking
-                // them with "you don't have an account yet".
-                'redirectOnEmailDomainMatch' => 'true',
+                'clientId'                               => 'broker-realm-client',
+                'clientSecret'                           => $secret,
+                'authorizationUrl'                       => "{$base}/realms/{$realm}/protocol/openid-connect/auth",
+                'tokenUrl'                               => "{$base}/realms/{$realm}/protocol/openid-connect/token",
+                'jwksUrl'                                => "{$base}/realms/{$realm}/protocol/openid-connect/certs",
+                'logoutUrl'                              => "{$base}/realms/{$realm}/protocol/openid-connect/logout",
+                'userInfoUrl'                            => "{$base}/realms/{$realm}/protocol/openid-connect/userinfo",
+                'issuer'                                 => "{$base}/realms/{$realm}",
+                'validateSignature'                      => 'true',
+                'useJwksUrl'                             => 'true',
+                'pkceEnabled'                            => 'false',
+                'syncMode'                               => 'IMPORT',
+                'loginHint'                              => 'true',
+                'kc.org.domain'                          => $realm,
+                'kc.org.broker.redirect.mode.email-matches' => 'true',
             ],
-        ]);
+        ];
+
+        if ($orgId) {
+            $idpPayload['organizationId'] = $orgId;
+        }
+
+        $idpRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances", $idpPayload);
 
         if ($idpRes->failed()) return;
 
@@ -286,37 +319,6 @@ class SuperRealmController extends Controller
                 'user.attribute' => 'email',
             ],
         ]);
-
-        // Create an Organization in the broker realm for this email domain and link the IdP
-        // to it. The broker realm's `organization` authenticator uses this to auto-route
-        // logins from @{realm} addresses to the correct IdP (Home IdP Discovery).
-        $orgRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/organizations", [
-            'name'    => $realm,
-            'alias'   => $realm,
-            'domains' => [['name' => $realm, 'verified' => false]],
-            'enabled' => true,
-        ]);
-        if ($orgRes->successful()) {
-            // Prefer the Location header; fall back to a search in case of trailing-slash issues.
-            $orgId = basename(rtrim($orgRes->header('Location'), '/'));
-            if (!$orgId || strlen($orgId) < 10) {
-                $orgs  = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/organizations", ['search' => $realm])->json();
-                $orgId = collect((array) $orgs)->firstWhere('alias', $realm)['id'] ?? null;
-            }
-            if ($orgId) {
-                // Fetch the IdP representation so we can pass it as the PUT body.
-                // Sending just [] links the IdP but loses org-context config;
-                // sending the full representation lets Keycloak store the
-                // `redirectOnEmailDomainMatch` flag in the org↔IdP association.
-                $idpRep = \Http::withToken($token)
-                    ->get("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}")
-                    ->json() ?? [];
-                \Http::withToken($token)->put(
-                    "{$base}/admin/realms/{$brokerRealm}/organizations/{$orgId}/identity-providers/{$realm}",
-                    $idpRep
-                );
-            }
-        }
     }
 
     public function toggle(string $realm)
