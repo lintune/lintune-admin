@@ -419,6 +419,36 @@ echo "  Nextcloud AIO setup complete. Domain: {$domain}"
 BASH);
     }
 
+    public function configureNextcloudOidc(string $kcBaseUrl, string $brokerRealm, string $clientId, string $clientSecret): void
+    {
+        $this->emit('→ Configuring Nextcloud OpenID Connect...');
+
+        $b64ClientId     = base64_encode($clientId);
+        $b64ClientSecret = base64_encode($clientSecret);
+        $discoveryUri    = rtrim($kcBaseUrl, '/') . "/realms/{$brokerRealm}/.well-known/openid-configuration";
+        $b64Discovery    = base64_encode($discoveryUri);
+
+        $this->execScript(<<<BASH
+NC_CLIENT_ID=\$(printf '%s' '{$b64ClientId}' | base64 -d)
+NC_CLIENT_SECRET=\$(printf '%s' '{$b64ClientSecret}' | base64 -d)
+NC_DISCOVERY_URI=\$(printf '%s' '{$b64Discovery}' | base64 -d)
+
+echo "  Installing user_oidc app..."
+docker exec -u www-data nextcloud-aio-nextcloud php occ app:install user_oidc < /dev/null || \
+    docker exec -u www-data nextcloud-aio-nextcloud php occ app:enable user_oidc < /dev/null || \
+    echo "  user_oidc already active."
+
+echo "  Configuring OpenID Connect provider..."
+docker exec -u www-data nextcloud-aio-nextcloud php occ user_oidc:provider Keycloak \
+    --clientid="\$NC_CLIENT_ID" \
+    --clientsecret="\$NC_CLIENT_SECRET" \
+    --discoveryuri="\$NC_DISCOVERY_URI" \
+    --check-bearer=1 \
+    --send-id-token-hint=1 < /dev/null
+echo "  OpenID Connect configured."
+BASH);
+    }
+
     public function postConfigureMailcow(string $adminUsername, string $adminPassword): void
     {
         $this->emit('→ Configuring Mailcow admin account...');

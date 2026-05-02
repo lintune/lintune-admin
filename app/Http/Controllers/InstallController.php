@@ -365,6 +365,57 @@ class InstallController extends Controller
             Setting::set('nextcloud.service_user', 'lintune-svc');
             Setting::set('nextcloud.service_password', $svcPass, encrypted: true);
         }
+
+        // Create Nextcloud OIDC client in Keycloak and configure user_oidc app
+        $kcBase      = rtrim(Setting::get('keycloak.url') ?? config('keycloak.base_url'), '/');
+        $brokerRealm = Setting::get('keycloak.broker_realm') ?? config('keycloak.broker_realm');
+        $kcToken     = $this->keycloakAdminToken($kcBase);
+        $clientSecret = Str::random(40);
+
+        $clientRes = \Http::withToken($kcToken)->post("{$kcBase}/admin/realms/{$brokerRealm}/clients", [
+            'clientId'                  => 'nextcloud',
+            'enabled'                   => true,
+            'publicClient'              => false,
+            'standardFlowEnabled'       => true,
+            'directAccessGrantsEnabled' => false,
+            'secret'                    => $clientSecret,
+            'redirectUris'              => ["{$ncUrl}/apps/user_oidc/code", "{$ncUrl}/*"],
+            'webOrigins'                => [$ncUrl],
+        ]);
+
+        if ($clientRes->status() === 409) {
+            // Already exists (retry) — fetch the current secret
+            $clients = \Http::withToken($kcToken)
+                ->get("{$kcBase}/admin/realms/{$brokerRealm}/clients", ['clientId' => 'nextcloud'])
+                ->json();
+            $kcClientId = $clients[0]['id'] ?? null;
+            if ($kcClientId) {
+                $secretData   = \Http::withToken($kcToken)->get("{$kcBase}/admin/realms/{$brokerRealm}/clients/{$kcClientId}/client-secret")->json();
+                $clientSecret = $secretData['value'];
+            }
+        } elseif ($clientRes->failed()) {
+            throw new \RuntimeException('Failed to create Nextcloud OIDC client in Keycloak: ' . $clientRes->body());
+        }
+
+        $ssh->configureNextcloudOidc($kcBase, $brokerRealm, 'nextcloud', $clientSecret);
+        Setting::set('nextcloud.oidc_client_id', 'nextcloud');
+        Setting::set('nextcloud.oidc_client_secret', $clientSecret, encrypted: true);
+    }
+
+    private function keycloakAdminToken(string $base): string
+    {
+        $res = \Http::asForm()->post("{$base}/realms/master/protocol/openid-connect/token", [
+            'grant_type' => 'password',
+            'client_id'  => 'admin-cli',
+            'username'   => config('keycloak.admin_user'),
+            'password'   => decrypt(base64_decode(config('keycloak.admin_password'))),
+        ]);
+
+        if ($res->failed() || empty($res->json()['access_token'])) {
+            throw new \RuntimeException('Could not obtain Keycloak admin token for OIDC setup.');
+        }
+
+        return $res->json()['access_token'];
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
