@@ -59,8 +59,8 @@ The installer runs before SETUP_COMPLETE is set and is blocked afterward.
 
 **Stages** — keycloak is always first; mailcow and nextcloud are optional depending on what the operator chose on the configure screen:
 1. `keycloak` — ensureDocker → installKeycloak → wait for KC ready → setupKeycloak (OIDC client, broker realm, service account, writes .env)
-2. `mailcow` — ensureDocker → installMailcow → postConfigureMailcow (new superadmin, API key, delete default admin) → Setting::set mailcow.url + mailcow.api_key (encrypted)
-3. `nextcloud` — ensureDocker → installNextcloud → Setting::set nextcloud.url + saveNcServiceCredentials
+2. `mailcow` — ensureDocker → installMailcow (injects API_KEY + API_ALLOW_FROM into mailcow.conf, captures key) → postConfigureMailcow (new superadmin via DB, delete default admin) → Setting::set mailcow.url + mailcow.api_key (encrypted)
+3. `nextcloud` — ensureDocker → installNextcloud (5-phase, creates lintune-svc + operator accounts) → create `nextcloud` OIDC client in Keycloak broker realm → configureNextcloudOidc (installs user_oidc app, runs occ user_oidc:provider) → Setting::set nextcloud credentials + oidc_client_id + oidc_client_secret
 
 **SSE stream** — `GET /install/stream/{key}` with query params:
 - `?stage=keycloak|mailcow|nextcloud` (default: keycloak)
@@ -69,6 +69,10 @@ The installer runs before SETUP_COMPLETE is set and is blocked afterward.
 After a non-final stage the SSE emits `done` with `{next_stage: 'mailcow'}` so the frontend shows a "Continue" button. After the last stage it emits `done` with `{redirect: '...'}` and the JS shows a "View Summary" button — it does NOT auto-redirect, giving the operator time to read the log.
 
 **`SETUP_COMPLETE` is written by `done()`, NOT by the SSE stream.** Writing it inside the stream causes a 404 on the done page: the browser's GET to `/install/done` hits the constructor which calls `abort(404)` when SETUP_COMPLETE is already true.
+
+**`done()` also sets `wizard.complete`** in the DB (`Setting::set('wizard.complete', '1')`), so the post-login wizard is bypassed when the guided installer was used.
+
+**`SetupComplete` middleware** reads the `.env` file directly (via `isSetupComplete()`) rather than `config('setup.complete')`. PHP-FPM workers cache env vars at spawn time — writing `SETUP_COMPLETE=true` to the file during the install would otherwise not be visible until the container restarted.
 
 **Cache keys** (all keyed by UUID from `run()`):
 - `install_params:{key}` — full form params, 2h TTL, kept until last stage completes
@@ -93,19 +97,22 @@ loading the file-written `SETUP_COMPLETE=true` on the same container run.
 - Non-root users: commands are prefixed with `sudo`.
 - Avoids sequential `exec()` calls on the same channel (phpseclib3 channel-reuse bug) — all work is done in a single `exec()` per logical operation.
 - Credentials injected into bash scripts via base64 (`base64_encode()` in PHP, `printf '%s' 'B64' | base64 -d` in bash) to safely handle special characters.
+- **All `docker compose exec` calls inside heredoc scripts must include `< /dev/null`.** The heredoc itself is stdin for the bash process; without `/dev/null` redirection, `docker exec` consumes the remaining heredoc as its own stdin and hangs.
 
 **Public methods:**
 - `ensureDocker()` — installs Docker via get.docker.com if missing.
-- `installKeycloak($user, $pass, $port, $hostname, $clean=false)` — docker-compose up in `/opt/keycloak`; post-start clears temp-admin flag via `kcadm.sh set-password --temporary false` inside the container.
-- `installMailcow($hostname, $tz, $clean=false)` — clones mailcow-dockerized, runs generate_config.sh; pulls each service image **individually** (sequential loop over `docker compose config --services`) so the terminal shows per-image progress.
-- `installNextcloud($domain, $tz, $clean=false)` — Nextcloud AIO mastercontainer via docker-compose in `/opt/nextcloud-aio`. Four-phase flow:
+- `installKeycloak($user, $pass, $port, $hostname, $clean=false)` — docker-compose up in `/opt/keycloak`; post-start clears temp-admin flag via `kcadm.sh set-password` (without `--temporary` flag — omitting it is what makes the password permanent; passing `--temporary false` is incorrect syntax and has no effect).
+- `installMailcow($hostname, $tz, $clean=false)` — clones mailcow-dockerized, runs `generate_config.sh`; appends `API_KEY` (5×6 uppercase alphanumeric, generated via `/dev/urandom`) and `API_ALLOW_FROM=127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` to `mailcow.conf` before containers start; emits `CAPTURE:mailcow_api_key`; pulls each service image **individually** (sequential loop over `docker compose config --services`); after `docker compose up -d`, removes `API_KEY` and `API_ALLOW_FROM` from `mailcow.conf` (Mailcow has already persisted them to its DB on first boot).
+- `installNextcloud($domain, $tz, $clean=false, $adminUsername='', $adminPassword='')` — Nextcloud AIO mastercontainer via docker-compose in `/opt/nextcloud-aio`. Five-phase flow:
   1. **Mastercontainer up** — polls `wget https://localhost:9080/` until AIO responds; the first page load generates the AIO passphrase in `/var/lib/docker/volumes/nextcloud_aio_mastercontainer/_data/data/configuration.json` (key `"password"`). Captured as `nc_aio_pass`.
   2. **Config file written** — uses `jq` to merge domain, timezone, `apache_port: "11000"`, `apache_ip_binding: "0.0.0.0"`, `borg_restore_password: ""`, and `wasStartButtonClicked: true` into `configuration.json`, deleting any existing `secrets` block so AIO regenerates them. Ownership fixed via `docker exec -u root ... chown www-data:www-data`.
   3. **Pull + start** — runs `PullContainerImages.php` then `StartContainers.php` via `docker exec -u www-data` (NOT `sudo -u www-data` inside the container — sudo may not be configured in AIO). Both scripts are silent; progress shown by backgrounding `docker events` filtered to `image pull` and `container create/start` events respectively. Background process killed with `|| true` on `wait` to absorb the SIGTERM exit code under `set -e`.
-  4. **Wait + users** — polls `occ status --output=json | jq '.installed'` (60×10s) until Nextcloud is ready. Reads `secrets.NEXTCLOUD_PASSWORD` from `configuration.json` (captured as `nc_admin_pass`). Creates `lintune-svc` service account via `docker exec -u www-data ... php occ user:add --password-from-env --group="admin"` with a random `openssl rand -hex 24` password (captured as `nc_svc_pass`). No admin password needed for `occ` — it has direct DB access.
+  4. **Wait + service account** — polls `occ status --output=json | jq '.installed'` (60×10s) until Nextcloud is ready. Reads `secrets.NEXTCLOUD_PASSWORD` from `configuration.json` (captured as `nc_admin_pass`). Creates `lintune-svc` service account via `docker exec -u www-data ... php occ user:add --password-from-env --group="admin"` with `openssl rand -hex 24` password (captured as `nc_svc_pass`).
+  5. **Operator account** — creates the MSP operator's own Nextcloud account (same username/password as the install form) via `occ user:add --group="admin"`.
   
-  `InstallController::runNextcloudStage()` saves all three captured values to `settings` encrypted: `nextcloud.aio_passphrase`, `nextcloud.admin_password`, `nextcloud.service_user` (`lintune-svc`), `nextcloud.service_password`.
-- `postConfigureMailcow($adminUsername, $adminPassword)` — runs after `installMailcow()`; polls for the default `admin` row in MySQL (not just MySQL ping — FK constraint requires admin row before api row), inserts a bootstrap API key, waits for the HTTP API, hashes the password via `doveadm pw -s SSHA256` (dovecot-mailcow container), inserts the new superadmin, assigns a permanent API key, then deletes the default admin and all associated rows (`tfa`, `domain_admins`, `api`, `admin`). Emits `CAPTURE:mailcow_api_key:...`.
+  `InstallController::runNextcloudStage()` saves captured values to `settings` encrypted: `nextcloud.aio_passphrase`, `nextcloud.admin_password`, `nextcloud.service_user` (`lintune-svc`), `nextcloud.service_password`. Then creates a `nextcloud` OIDC client in Keycloak's broker realm and calls `configureNextcloudOidc`. Saves `nextcloud.oidc_client_id` and `nextcloud.oidc_client_secret` to `settings`.
+- `configureNextcloudOidc($kcBaseUrl, $brokerRealm, $clientId, $clientSecret)` — installs the `user_oidc` app via `occ app:install user_oidc` (falls back to `app:enable` if already installed), then runs `occ user_oidc:provider Keycloak` with the discovery URI pointing at `{kcBaseUrl}/realms/{brokerRealm}/.well-known/openid-configuration`. Credentials injected via base64.
+- `postConfigureMailcow($adminUsername, $adminPassword)` — runs after `installMailcow()`; polls for the default `admin` row in MySQL (polling on admin row existence, not just MySQL ping — Mailcow's PHP init scripts run after MySQL accepts connections), hashes the password via `doveadm pw -s SSHA256` (dovecot-mailcow container, `< /dev/null` required to prevent heredoc stdin hang), inserts the new superadmin, then deletes the default admin and all associated rows (`tfa`, `domain_admins`, `admin`). No API involvement — pure DB operations.
   > **TODO (pre-production):** The Mailcow superadmin currently reuses the lintune-admin operator credentials (`admin_username` / `admin_password` from the install form). For production, `postConfigureMailcow` should generate its own random password and store it encrypted in `settings` (like Nextcloud does), so the Mailcow web UI is not protected by the same secret as the lintune-admin panel.
 - `$clean=true` wipes the install directory (docker compose down + rm -rf) before reinstalling. Used when the installer frontend sends `?retry=1`.
 
