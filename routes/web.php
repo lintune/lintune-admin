@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\InstallController;
 use App\Http\Controllers\Super\SettingsController;
+use App\Http\Controllers\Super\StatusController;
 use App\Http\Controllers\Super\AuditLogController;
 use App\Http\Controllers\Super\SetupController;
 use App\Http\Controllers\Super\SuperAuthController;
@@ -69,6 +70,7 @@ Route::prefix('super')->name('super.')->middleware(SetupComplete::class)->group(
             Route::delete('/realms/{realm}/nextcloud', [SuperRealmController::class, 'removeNextcloud'])->name('realms.nextcloud-remove');
             Route::post('/realms/{realm}/repair-federation', [SuperRealmController::class, 'repairFederation'])->name('realms.repair-federation');
             Route::delete('/realms/{realm}', [SuperRealmController::class, 'destroy'])->name('realms.destroy');
+            Route::get('/status', [StatusController::class, 'index'])->name('status');
             Route::get('/audit-logs', [AuditLogController::class, 'index'])->name('audit-logs');
             Route::get('/settings', [SettingsController::class, 'show'])->name('settings');
             Route::put('/settings', [SettingsController::class, 'update'])->name('settings.update');

@@ -313,6 +313,7 @@ class InstallController extends Controller
         $log[] = '  Keycloak is ready.';
 
         $this->setupKeycloak($base, $keycloakUrl, $kcAdminUsername, $kcAdminPassword, $log, $emit);
+        $this->initKuma($params, $base, $keycloakUrl, $kcAdminUsername, $kcAdminPassword, $log, $emit);
     }
 
     private function runMailcowStage(array $params, string $type, callable $cb, bool $retry): void
@@ -336,6 +337,8 @@ class InstallController extends Controller
         if ($apiKey) {
             Setting::set('mailcow.api_key', $apiKey, true);
         }
+
+        $this->addKumaMonitor('Mailcow', "https://{$params['mailcow_hostname']}");
     }
 
     private function runNextcloudStage(array $params, string $type, callable $cb, callable $emit, array &$log, bool $retry): void
@@ -433,6 +436,83 @@ class InstallController extends Controller
         $ssh->configureNextcloudOidc($kcBase, $brokerRealm, 'nextcloud', $clientSecret);
         Setting::set('nextcloud.oidc_client_id', 'nextcloud');
         Setting::set('nextcloud.oidc_client_secret', $clientSecret, encrypted: true);
+
+        $this->addKumaMonitor('Nextcloud', $ncUrl);
+        $this->addKumaMonitor('Nextcloud AIO', "https://{$ncDomain}:8080");
+    }
+
+    private function initKuma(array $params, string $kcInternalBase, string $keycloakUrl, string $kcAdminUsername, string $kcAdminPassword, array &$log, callable $emit): void
+    {
+        try {
+            $emit('log', ['line' => '→ Initializing Uptime Kuma...']);
+            $log[] = '→ Initializing Uptime Kuma...';
+
+            $adminUser = $params['admin_username'] ?? 'admin';
+            $adminPass = $params['admin_password'] ?? '';
+            $kumaUrl   = rtrim(env('KUMA_URL', ''), '/');
+            $kuma      = new \App\Services\KumaService();
+
+            $kuma->waitForReady();
+            $kuma->setup($adminUser, $adminPass); // idempotent — silently fails if already set up
+
+            $token  = $kuma->login($adminUser, $adminPass);
+            $apiKey = $kuma->createApiKey($token, 'lintune');
+            Setting::set('kuma.api_key', $apiKey, encrypted: true);
+            Setting::set('kuma.admin_user', $adminUser);
+
+            // Add Keycloak monitor
+            $kuma->addMonitor($apiKey, 'Keycloak', "{$keycloakUrl}/realms/master");
+
+            // Configure OIDC using KC master realm (non-fatal — Kuma API may vary by version)
+            try {
+                $kumaClientSecret = Str::random(40);
+                $kcToken = $this->keycloakAdminToken($kcInternalBase);
+
+                \Http::withToken($kcToken)->post("{$kcInternalBase}/admin/realms/master/clients", [
+                    'clientId'                  => 'uptime-kuma',
+                    'enabled'                   => true,
+                    'publicClient'              => false,
+                    'standardFlowEnabled'       => true,
+                    'directAccessGrantsEnabled' => false,
+                    'secret'                    => $kumaClientSecret,
+                    'redirectUris'              => ["{$kumaUrl}/api/auth/callback"],
+                    'webOrigins'                => [$kumaUrl],
+                ]);
+
+                $kuma->configureOidc(
+                    $token,
+                    "{$keycloakUrl}/realms/master/.well-known/openid-configuration",
+                    'uptime-kuma',
+                    $kumaClientSecret,
+                    "{$kumaUrl}/api/auth/callback"
+                );
+
+                Setting::set('kuma.oidc_client_secret', $kumaClientSecret, encrypted: true);
+                $emit('log', ['line' => '  Kuma OIDC configured with Keycloak master realm.']);
+            } catch (\Throwable $e) {
+                $emit('log', ['line' => '  Warning: Kuma OIDC setup skipped: ' . $e->getMessage()]);
+            }
+
+            $emit('log', ['line' => '  Uptime Kuma ready.']);
+            $log[] = '  Uptime Kuma ready.';
+        } catch (\Throwable $e) {
+            $emit('log', ['line' => '  Warning: Kuma init failed (non-fatal): ' . $e->getMessage()]);
+            $log[] = '  Warning: Kuma init failed: ' . $e->getMessage();
+        }
+    }
+
+    private function addKumaMonitor(string $name, string $url): void
+    {
+        try {
+            $rawKey = Setting::get('kuma.api_key');
+            if (!$rawKey) {
+                return;
+            }
+            $apiKey = decrypt($rawKey);
+            (new \App\Services\KumaService())->addMonitor($apiKey, $name, $url);
+        } catch (\Throwable) {
+            // Non-fatal — monitoring is secondary to the actual install
+        }
     }
 
     private function keycloakAdminToken(string $base): string

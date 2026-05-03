@@ -22,6 +22,7 @@
         </li>
       </ul>
       <ul class="navbar-nav ms-auto">
+        <li class="nav-item d-flex align-items-center me-3" id="svc-status-nav"></li>
         <li class="nav-item d-flex align-items-center me-3">
           <small class="text-muted" id="session-timer-wrap" style="display:none">Automatic logout in: <span id="session-timer" class="fw-bold">--:--</span></small>
         </li>
@@ -169,6 +170,29 @@
     updateDisplay();
     setInterval(updateDisplay, 1000);
     setInterval(refresh, 30000);
+})();
+
+(function () {
+    const el = document.getElementById('svc-status-nav');
+    const colors = { 0: '#dc3545', 1: '#28a745', 2: '#6c757d', 3: '#ffc107' };
+    const labels = { 0: 'Down', 1: 'Up', 2: 'Unknown', 3: 'Maintenance' };
+    function loadStatus() {
+        fetch('{{ route("super.status") }}')
+            .then(r => r.json())
+            .then(data => {
+                if (!data.length) { el.innerHTML = ''; return; }
+                el.innerHTML = data.map(s => {
+                    const color = colors[s.status] ?? colors[2];
+                    const label = labels[s.status] ?? 'Unknown';
+                    return `<span class="me-2 d-flex align-items-center" title="${s.name}: ${label}" style="cursor:default;gap:.25rem">` +
+                        `<i class="bi bi-circle-fill" style="color:${color};font-size:.5rem"></i>` +
+                        `<small style="font-size:.7rem;color:#ccc;line-height:1">${s.name}</small></span>`;
+                }).join('');
+            })
+            .catch(() => { el.innerHTML = ''; });
+    }
+    loadStatus();
+    setInterval(loadStatus, 30000);
 })();
 
 (function () {
