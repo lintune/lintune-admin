@@ -141,7 +141,7 @@ YAML;
         $composeYaml = implode("\n", array_filter([
             'services:',
             '  keycloak:',
-            '    image: quay.io/keycloak/keycloak:latest',
+            '    image: quay.io/keycloak/keycloak:' . env('KEYCLOAK_VERSION', '26.6.1'),
             "    command: {$kcCommand}",
             '    environment:',
             "      KEYCLOAK_ADMIN: {$adminUsername}",

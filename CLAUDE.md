@@ -131,18 +131,20 @@ Configured during the Keycloak install stage via `configureBrokerHomeIdpDiscover
 - Do NOT set `organizationId` on the IdP during creation. Keycloak stores it as a representation field but does NOT add the internal `kc.org` config key that the `organization` authenticator reads. `GET /organizations/{id}/identity-providers` returns `[]` and routing never fires.
 - The correct link is `POST /admin/realms/{brokerRealm}/organizations/{orgId}/identity-providers` with body `"alias"` (a quoted JSON string — e.g. `"nexed.tech"`). This sets both `organizationId` on the IdP AND the `kc.org` config key.
 - `PUT /organizations/{id}/identity-providers/{alias}` returns 405 in KC26 — endpoint does not exist.
+- **clientSecret on IdP PUT**: KC GET returns `clientSecret: "**********"` (masked). Omitting it on PUT **clears** the stored secret; writing `"**********"` back **corrupts** it. Always write the real secret: use the value from `GET /clients/{id}/client-secret` (or regenerate via `POST /clients/{id}/client-secret`) and include it explicitly in every IdP PUT.
 
 **Key IdP config:**
 - `kc.org.domain: realm` — email domain this IdP handles.
-- `kc.org.broker.redirect.mode.email-matches: true` — triggers automatic redirect when the typed email domain matches. Without this, the authenticator shows "Your email domain matches an organization but you don't have an account yet" instead of redirecting.
+- `kc.org.domain: realm` — **critical**: `OrganizationAuthenticator.redirect()` reads `broker.getConfig().get("kc.org.domain")` and compares it case-insensitively with the user's email domain. If missing, the comparison returns false and no redirect fires — the "Your email domain matches an organization but you don't have an account yet" page is shown instead. **The org-link (`POST /organizations/{id}/identity-providers`) strips this key from the config.** A PUT must be issued after the link to restore both `kc.org.domain` and `kc.org.broker.redirect.mode.email-matches`.
+- `kc.org.broker.redirect.mode.email-matches: true` — `IdentityProviderRedirectMode.EMAIL_MATCH.isSet()` calls `Boolean.parseBoolean(config.get("kc.org.broker.redirect.mode.email-matches"))`. Must be the string `"true"`. Also stripped by the org-link and must be restored via PUT.
 - `loginHint: true` — forwards the collected email as `login_hint` to the tenant realm so the username field is pre-filled.
 - `hideOnLogin: true` — hides the manual IdP button from the login page (routing is automatic).
 
-**Do NOT add execution config to the `organization` authenticator.** Keycloak 26 does not have a `useHomeIdpDiscovery` authenticator config property. Adding one causes the authenticator to fall through instead of redirecting, resulting in "Invalid username or password".
+**KC 26.6+ requires execution config on the `organization` authenticator.** Set `requiresUserMembership: false` via `POST /authentication/executions/{id}/config` — without it the default (true) blocks non-members (new users) instead of redirecting them to their IdP, causing "Your email domain matches an organization but you don't have an account yet." Do NOT add `useHomeIdpDiscovery` — that was a KC 26.0 non-existent property that causes fall-through and "Invalid username or password".
 
 **Realm provisioning adds:**
 - An OIDC IdP in the broker realm pointing at the tenant realm
-- A Keycloak Organization in the broker realm with `domain = realm` (e.g. `company.com`)
+- A Keycloak Organization in the broker realm with `domain = realm` (e.g. `company.com`) and **`redirectMode: EMAIL_DOMAIN`** (KC 26.1+ requirement — without it the org authenticator defaults to `IMPLICIT` which only redirects existing members, showing "Your email domain matches an organization but you don't have an account yet" to new users)
 - The IdP linked to that Organization via `POST /organizations/{orgId}/identity-providers` with body `"realm"` (JSON string)
 
 **Realm deletion cleans up:**
@@ -157,8 +159,9 @@ Nextcloud access is gated by membership in a `nextcloud` group in the user's ten
 
 **Chain (set up at provisioning time):**
 1. **Tenant realm** has a `nextcloud` KC group. `broker-realm-client` (the OIDC client the broker IdP uses to authenticate against the tenant) has an `oidc-group-membership-mapper` that adds all group names to a `groups` claim in the access token.
-2. **Broker realm IdP** (the IdP for this tenant) has an `oidc-user-attribute-idp-mapper` named `nc_groups` that reads the `groups` claim from the tenant token and stores it as the `nc_groups` user attribute on the broker realm user (syncMode INHERIT, so it updates on every login).
-3. **Broker realm `nextcloud` OIDC client** has an `oidc-usermodel-attribute-mapper` named `nc_groups` that reads the `nc_groups` user attribute and emits it as a multivalued `groups` claim in the Nextcloud access token.
+2. **Broker realm user profile** must declare `nc_groups` as a custom attribute (`multivalued: true`). KC 26.x uses declarative user profile — any attribute not declared in the realm's user profile schema is **silently dropped** even when set by an IdP mapper. `setupBrokerFederation()` and `repairFederation()` both ensure this via `PUT /admin/realms/{brokerRealm}/users/profile`.
+3. **Broker realm IdP** (the IdP for this tenant) has an `oidc-user-attribute-idp-mapper` named `nc_groups` that reads the `groups` claim from the tenant token and stores it as the `nc_groups` user attribute on the broker realm user (syncMode FORCE, so it updates on every login).
+4. **Broker realm `nextcloud` OIDC client** has an `oidc-usermodel-attribute-mapper` named `nc_groups` that reads the `nc_groups` user attribute and emits it as a multivalued `groups` claim in the ID token, access token, and userinfo. **Must have `id.token.claim: true`** — `user_oidc`'s `getSyncGroupsOfToken()` reads `$idTokenPayload`; if the claim is absent from the ID token, `foreach()` crashes with "argument must be of type array|object, null given" and the login fails with "Unexpected error".
 
 **Nextcloud side:**
 - `user_oidc` configured with `--mapping-groups=groups --group-restrict-login-to-whitelist=1 --group-whitelist-regex=nextcloud`.

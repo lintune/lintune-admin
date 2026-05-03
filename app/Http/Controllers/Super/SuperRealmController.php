@@ -283,11 +283,15 @@ class SuperRealmController extends Controller
         );
 
         // Create the Organization first so we have its ID for the link step below.
+        // `redirectMode: EMAIL_DOMAIN` — KC 26.1+ required for home IdP discovery auto-redirect.
+        // Without it the org authenticator defaults to IMPLICIT (redirects only existing members)
+        // and shows "Your email domain matches an organization but you don't have an account yet".
         $orgRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/organizations", [
-            'name'    => $realm,
-            'alias'   => $realm,
-            'domains' => [['name' => $realm, 'verified' => false]],
-            'enabled' => true,
+            'name'         => $realm,
+            'alias'        => $realm,
+            'domains'      => [['name' => $realm, 'verified' => false]],
+            'enabled'      => true,
+            'redirectMode' => 'EMAIL_DOMAIN',
         ]);
 
         $orgId = null;
@@ -332,6 +336,10 @@ class SuperRealmController extends Controller
                 'pkceEnabled'                            => 'false',
                 'syncMode'                               => 'IMPORT',
                 'loginHint'                              => 'true',
+                // Disable userinfo endpoint — use ID token directly. The userinfo call
+                // overrides given_name/family_name with null if not in userinfo response,
+                // causing the first-broker-login Review Profile form to show empty fields.
+                'disableUserInfo'                        => 'true',
                 'kc.org.domain'                          => $realm,
                 'kc.org.broker.redirect.mode.email-matches' => 'true',
             ],
@@ -351,6 +359,25 @@ class SuperRealmController extends Controller
             \Http::withToken($token)
                 ->withBody(json_encode($realm), 'application/json')
                 ->post("{$base}/admin/realms/{$brokerRealm}/organizations/{$orgId}/identity-providers");
+
+            // The org-link strips kc.org.domain and resets kc.org.broker.redirect.mode.email-matches.
+            // kc.org.domain: OrganizationAuthenticator reads this to match the email domain before
+            //   redirecting — if missing, redirect() returns false and "no account yet" is shown.
+            // kc.org.broker.redirect.mode.email-matches: must be "true" (Boolean.parseBoolean) for
+            //   IdentityProviderRedirectMode.EMAIL_MATCH.isSet() to return true.
+            $idpCurrent = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}")->json();
+            if (!empty($idpCurrent)) {
+                $idpCurrent['config']['kc.org.domain']                             = $realm;
+                $idpCurrent['config']['kc.org.broker.redirect.mode.email-matches'] = 'true';
+                // KC GET returns clientSecret masked as "**********". Omitting it on PUT clears
+                // the stored secret; writing "**********" corrupts it. Use the real $secret we
+                // already have from the client-secret endpoint.
+                $idpCurrent['config']['clientSecret'] = $secret;
+                \Http::withToken($token)->put(
+                    "{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}",
+                    $idpCurrent
+                );
+            }
         }
 
         \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers", [
@@ -363,6 +390,17 @@ class SuperRealmController extends Controller
                 'user.attribute' => 'email',
             ],
         ]);
+
+        // KC 26.x declarative user profile silently drops attributes that are not explicitly
+        // declared in the realm's user profile schema. Declare nc_groups so the IdP mapper
+        // can persist it on the broker realm user.
+        $upConfig = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/users/profile")->json();
+        $upAttrs  = $upConfig['attributes'] ?? [];
+        if (!collect($upAttrs)->contains('name', 'nc_groups')) {
+            $upAttrs[]              = ['name' => 'nc_groups', 'multivalued' => true, 'permissions' => ['view' => ['admin'], 'edit' => ['admin']]];
+            $upConfig['attributes'] = $upAttrs;
+            \Http::withToken($token)->put("{$base}/admin/realms/{$brokerRealm}/users/profile", $upConfig);
+        }
 
         // Import the groups claim from the tenant realm id_token into the nc_groups user
         // attribute on the broker realm user so the nextcloud KC client can pass it through.
@@ -393,20 +431,46 @@ class SuperRealmController extends Controller
 
         $steps = [];
 
-        // 1. Ensure nextcloud group exists in tenant realm
-        $res = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/groups", ['name' => 'nextcloud']);
+        // 1. Ensure nextcloud group in tenant realm
+        $res     = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/groups", ['name' => 'nextcloud']);
         $steps[] = $res->status() === 201 ? 'Created nextcloud KC group' : 'nextcloud KC group already exists';
 
-        // 2. Ensure groups claim mapper on broker-realm-client in tenant realm
-        $clients = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients", ['clientId' => 'broker-realm-client'])->json();
-        $client  = collect((array) $clients)->first();
+        // 2. Ensure broker-realm-client exists in tenant realm and retrieve its secret.
+        //    The secret is needed to create/update the broker IdP.
+        $clients    = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients", ['clientId' => 'broker-realm-client'])->json();
+        $client     = collect((array) $clients)->first();
+        $kcClientId = null;
+        $secret     = null;
+
         if ($client) {
-            $clientId = $client['id'];
-            $mappers  = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients/{$clientId}/protocol-mappers/models")->json();
+            $kcClientId = $client['id'];
+            $secret     = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients/{$kcClientId}/client-secret")->json()['value'] ?? null;
+            $steps[]    = 'broker-realm-client already exists';
+        } else {
+            $createRes = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/clients", [
+                'clientId'                  => 'broker-realm-client',
+                'enabled'                   => true,
+                'publicClient'              => false,
+                'standardFlowEnabled'       => true,
+                'directAccessGrantsEnabled' => false,
+                'redirectUris'              => ["{$base}/realms/{$brokerRealm}/broker/{$realm}/endpoint"],
+            ]);
+            if ($createRes->successful()) {
+                $kcClientId = basename($createRes->header('Location'));
+                $secret     = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients/{$kcClientId}/client-secret")->json()['value'] ?? null;
+                $steps[]    = 'Created broker-realm-client';
+            } else {
+                $steps[] = 'WARNING: failed to create broker-realm-client — ' . $createRes->body();
+            }
+        }
+
+        // 3. Ensure groups claim mapper on broker-realm-client
+        if ($kcClientId) {
+            $mappers  = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients/{$kcClientId}/protocol-mappers/models")->json();
             $existing = collect((array) $mappers)->firstWhere('name', 'groups');
             if (!$existing) {
                 \Http::withToken($token)->post(
-                    "{$base}/admin/realms/{$realm}/clients/{$clientId}/protocol-mappers/models",
+                    "{$base}/admin/realms/{$realm}/clients/{$kcClientId}/protocol-mappers/models",
                     [
                         'name'           => 'groups',
                         'protocol'       => 'openid-connect',
@@ -422,9 +486,8 @@ class SuperRealmController extends Controller
                 );
                 $steps[] = 'Added groups claim mapper to broker-realm-client';
             } else {
-                // Ensure id_token is enabled on existing mapper
                 \Http::withToken($token)->put(
-                    "{$base}/admin/realms/{$realm}/clients/{$clientId}/protocol-mappers/models/{$existing['id']}",
+                    "{$base}/admin/realms/{$realm}/clients/{$kcClientId}/protocol-mappers/models/{$existing['id']}",
                     array_merge($existing, ['config' => array_merge($existing['config'] ?? [], [
                         'id.token.claim'       => 'true',
                         'userinfo.token.claim' => 'true',
@@ -432,69 +495,278 @@ class SuperRealmController extends Controller
                 );
                 $steps[] = 'Updated groups claim mapper (enabled id_token)';
             }
-        } else {
-            $steps[] = 'WARNING: broker-realm-client not found in tenant realm';
         }
 
-        // 3. Ensure nc_groups attribute importer on broker IdP (syncMode FORCE)
-        if ($brokerRealm) {
-            $idpMappers = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers")->json();
-            $ncMapper   = collect((array) $idpMappers)->firstWhere('name', 'nc_groups');
-            if (!$ncMapper) {
-                \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers", [
-                    'name'                   => 'nc_groups',
-                    'identityProviderAlias'  => $realm,
-                    'identityProviderMapper' => 'oidc-user-attribute-idp-mapper',
+        if (!$brokerRealm) {
+            AuditLogger::log('realm.federation_repaired', $realm);
+            return redirect()->route('super.realms.edit', $realm)->with('success', 'Federation repaired (no broker realm): ' . implode('; ', $steps));
+        }
+
+        // 4. Ensure Organization exists in broker realm with redirectMode EMAIL_DOMAIN.
+        //    KC 26.1+ defaults to IMPLICIT which only redirects existing members — EMAIL_DOMAIN
+        //    is required for home IdP discovery to auto-redirect new users based on email domain.
+        $orgs  = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/organizations", ['search' => $realm])->json();
+        $org   = collect((array) $orgs)->firstWhere('alias', $realm);
+        $orgId = $org['id'] ?? null;
+
+        if (!$orgId) {
+            $orgRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/organizations", [
+                'name'         => $realm,
+                'alias'        => $realm,
+                'domains'      => [['name' => $realm, 'verified' => false]],
+                'enabled'      => true,
+                'redirectMode' => 'EMAIL_DOMAIN',
+            ]);
+            if ($orgRes->successful()) {
+                $orgId = basename(rtrim($orgRes->header('Location'), '/'));
+                if (!$orgId || strlen($orgId) < 10) {
+                    $orgs  = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/organizations", ['search' => $realm])->json();
+                    $orgId = collect((array) $orgs)->firstWhere('alias', $realm)['id'] ?? null;
+                }
+                $steps[] = 'Created Organization in broker realm';
+            } else {
+                $steps[] = 'WARNING: failed to create Organization — ' . $orgRes->body();
+            }
+        } else {
+            $steps[] = 'Organization already exists in broker realm';
+        }
+
+        // Ensure redirectMode is EMAIL_DOMAIN (KC 26.1+ requirement for home IdP discovery).
+        if ($orgId) {
+            $orgFull = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/organizations/{$orgId}")->json();
+            if (!empty($orgFull) && ($orgFull['redirectMode'] ?? '') !== 'EMAIL_DOMAIN') {
+                \Http::withToken($token)->put(
+                    "{$base}/admin/realms/{$brokerRealm}/organizations/{$orgId}",
+                    array_merge($orgFull, ['redirectMode' => 'EMAIL_DOMAIN'])
+                );
+                $steps[] = 'Set Organization redirectMode to EMAIL_DOMAIN (home IdP discovery fix)';
+            } elseif (!empty($orgFull)) {
+                $steps[] = 'Organization redirectMode already EMAIL_DOMAIN';
+            }
+        }
+
+        // 5. Ensure IdP exists in broker realm; create if missing
+        $idpFetch   = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}");
+        $idpCurrent = $idpFetch->successful() ? $idpFetch->json() : null;
+
+        if (!$idpCurrent) {
+            if (!$secret) {
+                $steps[] = 'WARNING: broker IdP missing and no client secret available — broker-realm-client must exist first';
+            } else {
+                $createIdpRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances", [
+                    'alias'                     => $realm,
+                    'displayName'               => $realm,
+                    'providerId'                => 'oidc',
+                    'enabled'                   => true,
+                    'trustEmail'                => true,
+                    'hideOnLogin'               => true,
+                    'firstBrokerLoginFlowAlias' => 'first broker login',
                     'config' => [
-                        'syncMode'               => 'FORCE',
-                        'claim'                  => 'groups',
-                        'user.attribute'         => 'nc_groups',
-                        'are.claim.values.regex' => 'false',
+                        'clientId'                               => 'broker-realm-client',
+                        'clientSecret'                           => $secret,
+                        'authorizationUrl'                       => "{$base}/realms/{$realm}/protocol/openid-connect/auth",
+                        'tokenUrl'                               => "{$base}/realms/{$realm}/protocol/openid-connect/token",
+                        'jwksUrl'                                => "{$base}/realms/{$realm}/protocol/openid-connect/certs",
+                        'logoutUrl'                              => "{$base}/realms/{$realm}/protocol/openid-connect/logout",
+                        'userInfoUrl'                            => "{$base}/realms/{$realm}/protocol/openid-connect/userinfo",
+                        'issuer'                                 => "{$base}/realms/{$realm}",
+                        'validateSignature'                      => 'true',
+                        'useJwksUrl'                             => 'true',
+                        'pkceEnabled'                            => 'false',
+                        'syncMode'                               => 'IMPORT',
+                        'loginHint'                              => 'true',
+                        'disableUserInfo'                        => 'true',
+                        'kc.org.domain'                          => $realm,
+                        'kc.org.broker.redirect.mode.email-matches' => 'true',
                     ],
                 ]);
-                $steps[] = 'Added nc_groups attribute importer on broker IdP';
+                if ($createIdpRes->successful()) {
+                    $idpCurrent = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}")->json();
+                    $steps[] = 'Created IdP in broker realm';
+                } else {
+                    $steps[] = 'WARNING: failed to create IdP — ' . $createIdpRes->body();
+                }
+            }
+        } else {
+            $steps[] = 'IdP already exists in broker realm';
+        }
+
+        // 6. Ensure IdP is linked to Organization, then restore kc.org.broker.redirect.mode.email-matches
+        //    (org-link resets this config to its default false).
+        if ($orgId && $idpCurrent) {
+            $linkedIdps = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/organizations/{$orgId}/identity-providers")->json();
+            $isLinked   = collect((array) $linkedIdps)->contains('alias', $realm);
+
+            if (!$isLinked) {
+                \Http::withToken($token)
+                    ->withBody(json_encode($realm), 'application/json')
+                    ->post("{$base}/admin/realms/{$brokerRealm}/organizations/{$orgId}/identity-providers");
+                $steps[] = 'Linked IdP to Organization';
             } else {
-                // Ensure syncMode is FORCE
-                \Http::withToken($token)->put(
-                    "{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers/{$ncMapper['id']}",
-                    array_merge($ncMapper, ['config' => array_merge($ncMapper['config'] ?? [], ['syncMode' => 'FORCE'])])
-                );
-                $steps[] = 'Updated nc_groups attribute importer (syncMode → FORCE)';
+                $steps[] = 'IdP already linked to Organization';
             }
 
-            // 4. Ensure nc_groups attribute mapper on broker nextcloud KC client
-            $ncClients = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/clients", ['clientId' => 'nextcloud'])->json();
-            $ncClient  = collect((array) $ncClients)->first();
-            if ($ncClient) {
-                $ncClientId  = $ncClient['id'];
-                $ncMappers   = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/clients/{$ncClientId}/protocol-mappers/models")->json();
-                $ncAttrMapper = collect((array) $ncMappers)->firstWhere('name', 'nc_groups');
-                if (!$ncAttrMapper) {
-                    \Http::withToken($token)->post(
-                        "{$base}/admin/realms/{$brokerRealm}/clients/{$ncClientId}/protocol-mappers/models",
-                        [
-                            'name'           => 'nc_groups',
-                            'protocol'       => 'openid-connect',
-                            'protocolMapper' => 'oidc-usermodel-attribute-mapper',
-                            'config'         => [
-                                'user.attribute'       => 'nc_groups',
-                                'claim.name'           => 'groups',
-                                'jsonType.label'       => 'String',
-                                'id.token.claim'       => 'false',
-                                'access.token.claim'   => 'true',
-                                'userinfo.token.claim' => 'false',
-                                'multivalued'          => 'true',
-                                'aggregate.attrs'      => 'false',
-                            ],
-                        ]
-                    );
-                    $steps[] = 'Added nc_groups → groups mapper on broker nextcloud client';
-                } else {
-                    $steps[] = 'nc_groups mapper on broker nextcloud client already exists';
-                }
-            } else {
-                $steps[] = 'WARNING: nextcloud KC client not found in broker realm (install Nextcloud first)';
+            $idpCurrent = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}")->json();
+            $needsPut = false;
+            if (($idpCurrent['config']['kc.org.domain'] ?? '') !== $realm) {
+                $idpCurrent['config']['kc.org.domain'] = $realm;
+                $needsPut = true;
             }
+            if (($idpCurrent['config']['kc.org.broker.redirect.mode.email-matches'] ?? '') !== 'true') {
+                $idpCurrent['config']['kc.org.broker.redirect.mode.email-matches'] = 'true';
+                $needsPut = true;
+            }
+            if (($idpCurrent['config']['disableUserInfo'] ?? '') !== 'true') {
+                // Disable userinfo endpoint: KC's userinfo call overrides given_name/family_name
+                // with null when not returned, causing first-broker-login Review Profile to show
+                // an empty form. The ID token already has all needed claims.
+                $idpCurrent['config']['disableUserInfo'] = 'true';
+                $needsPut = true;
+            }
+            if ($needsPut) {
+                // KC GET returns clientSecret masked as "**********". Omitting it on PUT clears
+                // the stored secret; writing "**********" corrupts it. Regenerate the client
+                // secret and write the real value so IdP and client always stay in sync.
+                if ($kcClientId) {
+                    $freshSecret = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/clients/{$kcClientId}/client-secret")->json()['value'] ?? $secret;
+                    $idpCurrent['config']['clientSecret'] = $freshSecret;
+                } else {
+                    unset($idpCurrent['config']['clientSecret']);
+                }
+                \Http::withToken($token)->put(
+                    "{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}",
+                    $idpCurrent
+                );
+                $steps[] = 'Updated broker IdP config (kc.org.domain, redirect mode, disableUserInfo)';
+            } else {
+                $steps[] = 'Broker IdP config already correct';
+            }
+        }
+
+        // 7. Ensure organization authenticator has requiresUserMembership=false (KC 26.6+ fix).
+        //    Default is true — blocks new users instead of redirecting to their IdP.
+        $flowExecs  = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/authentication/flows/broker-home-idp-discovery/executions")->json();
+        $orgExec    = collect((array) $flowExecs)->firstWhere('providerId', 'organization');
+        if ($orgExec) {
+            $configId = $orgExec['authenticationConfig'] ?? null;
+            if (!$configId) {
+                \Http::withToken($token)->post(
+                    "{$base}/admin/realms/{$brokerRealm}/authentication/executions/{$orgExec['id']}/config",
+                    ['alias' => 'lintune-org-redirect', 'config' => ['requiresUserMembership' => 'false']]
+                );
+                $steps[] = 'Set requiresUserMembership=false on organization authenticator';
+            } else {
+                $cfg = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/authentication/config/{$configId}")->json();
+                if (($cfg['config']['requiresUserMembership'] ?? 'true') !== 'false') {
+                    $cfg['config']['requiresUserMembership'] = 'false';
+                    \Http::withToken($token)->put("{$base}/admin/realms/{$brokerRealm}/authentication/config/{$configId}", $cfg);
+                    $steps[] = 'Updated requiresUserMembership to false on organization authenticator';
+                } else {
+                    $steps[] = 'requiresUserMembership already false on organization authenticator';
+                }
+            }
+        }
+
+        // 8. Ensure first-broker-login Review Profile step is set to OFF.
+        //    The broker realm is a pure pass-through — user profile data comes from the tenant
+        //    realm via OIDC claims automatically. Users should never see the profile form here.
+        $fbFlowExecs = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/authentication/flows/first%20broker%20login/executions")->json();
+        $rpExec      = collect((array) $fbFlowExecs)->firstWhere('providerId', 'idp-review-profile');
+        if ($rpExec) {
+            $rpConfigId = $rpExec['authenticationConfig'] ?? null;
+            if ($rpConfigId) {
+                $rpCfg = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/authentication/config/{$rpConfigId}")->json();
+                if (($rpCfg['config']['update.profile.on.first.login'] ?? '') !== 'off') {
+                    $rpCfg['config']['update.profile.on.first.login'] = 'off';
+                    \Http::withToken($token)->put("{$base}/admin/realms/{$brokerRealm}/authentication/config/{$rpConfigId}", $rpCfg);
+                    $steps[] = 'Set Review Profile to off in first-broker-login flow';
+                } else {
+                    $steps[] = 'Review Profile already off in first-broker-login flow';
+                }
+            }
+        }
+
+        // 9. Ensure nc_groups is declared in broker realm user profile.
+        //    KC 26.x declarative user profile silently drops undeclared attributes —
+        //    without this, the IdP mapper sets nc_groups but KC never persists it.
+        $upConfig = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/users/profile")->json();
+        $upAttrs  = $upConfig['attributes'] ?? [];
+        if (!collect($upAttrs)->contains('name', 'nc_groups')) {
+            $upAttrs[]              = ['name' => 'nc_groups', 'multivalued' => true, 'permissions' => ['view' => ['admin'], 'edit' => ['admin']]];
+            $upConfig['attributes'] = $upAttrs;
+            \Http::withToken($token)->put("{$base}/admin/realms/{$brokerRealm}/users/profile", $upConfig);
+            $steps[] = 'Declared nc_groups in broker realm user profile';
+        } else {
+            $steps[] = 'nc_groups already declared in broker realm user profile';
+        }
+
+        // 9. Ensure nc_groups attribute importer on broker IdP (syncMode FORCE)
+        $idpMappers = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers")->json();
+        $ncMapper   = collect((array) $idpMappers)->firstWhere('name', 'nc_groups');
+        if (!$ncMapper) {
+            \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers", [
+                'name'                   => 'nc_groups',
+                'identityProviderAlias'  => $realm,
+                'identityProviderMapper' => 'oidc-user-attribute-idp-mapper',
+                'config' => [
+                    'syncMode'               => 'FORCE',
+                    'claim'                  => 'groups',
+                    'user.attribute'         => 'nc_groups',
+                    'are.claim.values.regex' => 'false',
+                ],
+            ]);
+            $steps[] = 'Added nc_groups attribute importer on broker IdP';
+        } else {
+            \Http::withToken($token)->put(
+                "{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers/{$ncMapper['id']}",
+                array_merge($ncMapper, ['config' => array_merge($ncMapper['config'] ?? [], ['syncMode' => 'FORCE'])])
+            );
+            $steps[] = 'Updated nc_groups attribute importer (syncMode → FORCE)';
+        }
+
+        // 10. Ensure nc_groups attribute mapper on broker nextcloud KC client
+        $ncClients    = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/clients", ['clientId' => 'nextcloud'])->json();
+        $ncClient     = collect((array) $ncClients)->first();
+        if ($ncClient) {
+            $ncClientId   = $ncClient['id'];
+            $ncMappers    = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/clients/{$ncClientId}/protocol-mappers/models")->json();
+            $ncAttrMapper = collect((array) $ncMappers)->firstWhere('name', 'nc_groups');
+            $correctMapperConfig = [
+                'user.attribute'       => 'nc_groups',
+                'claim.name'           => 'groups',
+                'jsonType.label'       => 'String',
+                'id.token.claim'       => 'true',
+                'access.token.claim'   => 'true',
+                'userinfo.token.claim' => 'true',
+                'multivalued'          => 'true',
+                'aggregate.attrs'      => 'false',
+            ];
+            if (!$ncAttrMapper) {
+                \Http::withToken($token)->post(
+                    "{$base}/admin/realms/{$brokerRealm}/clients/{$ncClientId}/protocol-mappers/models",
+                    [
+                        'name'           => 'nc_groups',
+                        'protocol'       => 'openid-connect',
+                        'protocolMapper' => 'oidc-usermodel-attribute-mapper',
+                        'config'         => $correctMapperConfig,
+                    ]
+                );
+                $steps[] = 'Added nc_groups → groups mapper on broker nextcloud client';
+            } else {
+                // Fix mapper if id.token.claim or userinfo.token.claim are wrong (must be true for user_oidc)
+                $existingConfig = $ncAttrMapper['config'] ?? [];
+                if (($existingConfig['id.token.claim'] ?? '') !== 'true' || ($existingConfig['userinfo.token.claim'] ?? '') !== 'true') {
+                    \Http::withToken($token)->put(
+                        "{$base}/admin/realms/{$brokerRealm}/clients/{$ncClientId}/protocol-mappers/models/{$ncAttrMapper['id']}",
+                        array_merge($ncAttrMapper, ['config' => array_merge($existingConfig, ['id.token.claim' => 'true', 'userinfo.token.claim' => 'true'])])
+                    );
+                    $steps[] = 'Fixed nc_groups mapper: enabled id.token.claim and userinfo.token.claim';
+                } else {
+                    $steps[] = 'nc_groups mapper on broker nextcloud client already correct';
+                }
+            }
+        } else {
+            $steps[] = 'WARNING: nextcloud KC client not found in broker realm (install Nextcloud first)';
         }
 
         AuditLogger::log('realm.federation_repaired', $realm);

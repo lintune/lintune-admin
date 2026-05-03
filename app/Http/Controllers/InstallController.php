@@ -419,9 +419,9 @@ class InstallController extends Controller
                             'user.attribute'       => 'nc_groups',
                             'claim.name'           => 'groups',
                             'jsonType.label'       => 'String',
-                            'id.token.claim'       => 'false',
+                            'id.token.claim'       => 'true',
                             'access.token.claim'   => 'true',
-                            'userinfo.token.claim' => 'false',
+                            'userinfo.token.claim' => 'true',
                             'multivalued'          => 'true',
                             'aggregate.attrs'      => 'false',
                         ],
@@ -684,6 +684,34 @@ class InstallController extends Controller
             );
         }
 
+        // KC 26.6+ added requiresUserMembership config to the organization authenticator.
+        // Default is true — blocks non-members (new users) instead of redirecting them to
+        // their IdP, causing "Your email domain matches an organization but you don't have
+        // an account yet." Set to false so home IdP discovery redirects new users.
+        $executions = \Http::withToken($token)
+            ->get("{$base}/admin/realms/{$brokerRealm}/authentication/flows/{$flowAlias}/executions")
+            ->json();
+        $orgExec = collect((array) $executions)->firstWhere('providerId', 'organization');
+        if ($orgExec && empty($orgExec['authenticationConfig'])) {
+            \Http::withToken($token)->post(
+                "{$base}/admin/realms/{$brokerRealm}/authentication/executions/{$orgExec['id']}/config",
+                ['alias' => 'lintune-org-redirect', 'config' => ['requiresUserMembership' => 'false']]
+            );
+        }
+
+        // Set first-broker-login Review Profile to OFF.
+        // The broker realm is a pure pass-through — profile data comes from the tenant realm
+        // via OIDC claims. Users should never be asked to manually fill in their profile here.
+        $fbExecs = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/authentication/flows/first%20broker%20login/executions")->json();
+        $rpExec  = collect((array) $fbExecs)->firstWhere('providerId', 'idp-review-profile');
+        if ($rpExec) {
+            $rpConfigId = $rpExec['authenticationConfig'] ?? null;
+            if ($rpConfigId) {
+                $rpCfg = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/authentication/config/{$rpConfigId}")->json();
+                $rpCfg['config']['update.profile.on.first.login'] = 'off';
+                \Http::withToken($token)->put("{$base}/admin/realms/{$brokerRealm}/authentication/config/{$rpConfigId}", $rpCfg);
+            }
+        }
 
         // Bind the broker realm's browser login to this flow
         \Http::withToken($token)->put("{$base}/admin/realms/{$brokerRealm}", [
