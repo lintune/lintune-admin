@@ -191,6 +191,32 @@
 
 </form>
 
+{{-- Maintenance --}}
+<div class="card mb-4">
+  <div class="card-header">
+    <h5 class="card-title mb-0"><i class="bi bi-tools me-2"></i>Maintenance</h5>
+  </div>
+  <div class="card-body">
+    <div class="d-flex align-items-start justify-content-between py-2">
+      <div>
+        <strong>Repair Keycloak broker federation</strong>
+        <div class="text-muted small">
+          Ensures the Nextcloud group claim chain is correctly configured in Keycloak
+          (nextcloud KC group, groups claim mapper, nc_groups attribute importer with FORCE sync).
+          Run this after provisioning Nextcloud or if Nextcloud login is blocked for all users.
+          Users must log out and back in after running.
+        </div>
+      </div>
+      <form method="POST" action="{{ route('super.realms.repair-federation', $realm) }}" class="ms-4">
+        @csrf
+        <button type="submit" class="btn btn-sm btn-outline-secondary">
+          <i class="bi bi-wrench me-1"></i>Repair federation
+        </button>
+      </form>
+    </div>
+  </div>
+</div>
+
 {{-- Danger zone --}}
 @php $canDelete = !$mailcowExists && !$nextcloudExists; @endphp
 <div class="card border-danger mb-4">

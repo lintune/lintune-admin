@@ -67,6 +67,7 @@ Route::prefix('super')->name('super.')->middleware(SetupComplete::class)->group(
             Route::get('/realms/{realm}/nextcloud-settings', [SuperRealmController::class, 'nextcloudSettings'])->name('realms.nextcloud-settings');
             Route::put('/realms/{realm}/nextcloud', [SuperRealmController::class, 'updateNextcloud'])->name('realms.nextcloud-update');
             Route::delete('/realms/{realm}/nextcloud', [SuperRealmController::class, 'removeNextcloud'])->name('realms.nextcloud-remove');
+            Route::post('/realms/{realm}/repair-federation', [SuperRealmController::class, 'repairFederation'])->name('realms.repair-federation');
             Route::delete('/realms/{realm}', [SuperRealmController::class, 'destroy'])->name('realms.destroy');
             Route::get('/audit-logs', [AuditLogController::class, 'index'])->name('audit-logs');
             Route::get('/settings', [SettingsController::class, 'show'])->name('settings');

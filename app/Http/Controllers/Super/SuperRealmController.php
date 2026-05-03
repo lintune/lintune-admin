@@ -264,7 +264,8 @@ class SuperRealmController extends Controller
         \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/groups", ['name' => 'nextcloud']);
 
         // Add a groups claim mapper to broker-realm-client so the tenant realm includes
-        // group names in the token it sends to the broker IdP.
+        // group names in the id_token sent to the broker IdP.
+        // Must be in id_token: the broker IdP attribute importer reads from id_token, not access_token.
         \Http::withToken($token)->post(
             "{$base}/admin/realms/{$realm}/clients/{$clientId}/protocol-mappers/models",
             [
@@ -273,9 +274,9 @@ class SuperRealmController extends Controller
                 'protocolMapper' => 'oidc-group-membership-mapper',
                 'config'         => [
                     'full.path'            => 'false',
-                    'id.token.claim'       => 'false',
+                    'id.token.claim'       => 'true',
                     'access.token.claim'   => 'true',
-                    'userinfo.token.claim' => 'false',
+                    'userinfo.token.claim' => 'true',
                     'claim.name'           => 'groups',
                 ],
             ]
@@ -363,19 +364,142 @@ class SuperRealmController extends Controller
             ],
         ]);
 
-        // Import the groups claim from the tenant realm token into the nc_groups user
+        // Import the groups claim from the tenant realm id_token into the nc_groups user
         // attribute on the broker realm user so the nextcloud KC client can pass it through.
+        // syncMode FORCE: update on every login so group changes take effect immediately.
         \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers", [
             'name'                   => 'nc_groups',
             'identityProviderAlias'  => $realm,
             'identityProviderMapper' => 'oidc-user-attribute-idp-mapper',
             'config' => [
-                'syncMode'               => 'INHERIT',
+                'syncMode'               => 'FORCE',
                 'claim'                  => 'groups',
                 'user.attribute'         => 'nc_groups',
                 'are.claim.values.regex' => 'false',
             ],
         ]);
+    }
+
+    public function repairFederation(string $realm)
+    {
+        $base        = $this->baseUrl();
+        $brokerRealm = config('keycloak.broker_realm');
+
+        try {
+            $token = $this->adminToken();
+        } catch (\RuntimeException $e) {
+            return redirect()->route('super.realms.edit', $realm)->withErrors(['error' => $e->getMessage()]);
+        }
+
+        $steps = [];
+
+        // 1. Ensure nextcloud group exists in tenant realm
+        $res = \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/groups", ['name' => 'nextcloud']);
+        $steps[] = $res->status() === 201 ? 'Created nextcloud KC group' : 'nextcloud KC group already exists';
+
+        // 2. Ensure groups claim mapper on broker-realm-client in tenant realm
+        $clients = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients", ['clientId' => 'broker-realm-client'])->json();
+        $client  = collect((array) $clients)->first();
+        if ($client) {
+            $clientId = $client['id'];
+            $mappers  = \Http::withToken($token)->get("{$base}/admin/realms/{$realm}/clients/{$clientId}/protocol-mappers/models")->json();
+            $existing = collect((array) $mappers)->firstWhere('name', 'groups');
+            if (!$existing) {
+                \Http::withToken($token)->post(
+                    "{$base}/admin/realms/{$realm}/clients/{$clientId}/protocol-mappers/models",
+                    [
+                        'name'           => 'groups',
+                        'protocol'       => 'openid-connect',
+                        'protocolMapper' => 'oidc-group-membership-mapper',
+                        'config'         => [
+                            'full.path'            => 'false',
+                            'id.token.claim'       => 'true',
+                            'access.token.claim'   => 'true',
+                            'userinfo.token.claim' => 'true',
+                            'claim.name'           => 'groups',
+                        ],
+                    ]
+                );
+                $steps[] = 'Added groups claim mapper to broker-realm-client';
+            } else {
+                // Ensure id_token is enabled on existing mapper
+                \Http::withToken($token)->put(
+                    "{$base}/admin/realms/{$realm}/clients/{$clientId}/protocol-mappers/models/{$existing['id']}",
+                    array_merge($existing, ['config' => array_merge($existing['config'] ?? [], [
+                        'id.token.claim'       => 'true',
+                        'userinfo.token.claim' => 'true',
+                    ])])
+                );
+                $steps[] = 'Updated groups claim mapper (enabled id_token)';
+            }
+        } else {
+            $steps[] = 'WARNING: broker-realm-client not found in tenant realm';
+        }
+
+        // 3. Ensure nc_groups attribute importer on broker IdP (syncMode FORCE)
+        if ($brokerRealm) {
+            $idpMappers = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers")->json();
+            $ncMapper   = collect((array) $idpMappers)->firstWhere('name', 'nc_groups');
+            if (!$ncMapper) {
+                \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers", [
+                    'name'                   => 'nc_groups',
+                    'identityProviderAlias'  => $realm,
+                    'identityProviderMapper' => 'oidc-user-attribute-idp-mapper',
+                    'config' => [
+                        'syncMode'               => 'FORCE',
+                        'claim'                  => 'groups',
+                        'user.attribute'         => 'nc_groups',
+                        'are.claim.values.regex' => 'false',
+                    ],
+                ]);
+                $steps[] = 'Added nc_groups attribute importer on broker IdP';
+            } else {
+                // Ensure syncMode is FORCE
+                \Http::withToken($token)->put(
+                    "{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers/{$ncMapper['id']}",
+                    array_merge($ncMapper, ['config' => array_merge($ncMapper['config'] ?? [], ['syncMode' => 'FORCE'])])
+                );
+                $steps[] = 'Updated nc_groups attribute importer (syncMode → FORCE)';
+            }
+
+            // 4. Ensure nc_groups attribute mapper on broker nextcloud KC client
+            $ncClients = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/clients", ['clientId' => 'nextcloud'])->json();
+            $ncClient  = collect((array) $ncClients)->first();
+            if ($ncClient) {
+                $ncClientId  = $ncClient['id'];
+                $ncMappers   = \Http::withToken($token)->get("{$base}/admin/realms/{$brokerRealm}/clients/{$ncClientId}/protocol-mappers/models")->json();
+                $ncAttrMapper = collect((array) $ncMappers)->firstWhere('name', 'nc_groups');
+                if (!$ncAttrMapper) {
+                    \Http::withToken($token)->post(
+                        "{$base}/admin/realms/{$brokerRealm}/clients/{$ncClientId}/protocol-mappers/models",
+                        [
+                            'name'           => 'nc_groups',
+                            'protocol'       => 'openid-connect',
+                            'protocolMapper' => 'oidc-usermodel-attribute-mapper',
+                            'config'         => [
+                                'user.attribute'       => 'nc_groups',
+                                'claim.name'           => 'groups',
+                                'jsonType.label'       => 'String',
+                                'id.token.claim'       => 'false',
+                                'access.token.claim'   => 'true',
+                                'userinfo.token.claim' => 'false',
+                                'multivalued'          => 'true',
+                                'aggregate.attrs'      => 'false',
+                            ],
+                        ]
+                    );
+                    $steps[] = 'Added nc_groups → groups mapper on broker nextcloud client';
+                } else {
+                    $steps[] = 'nc_groups mapper on broker nextcloud client already exists';
+                }
+            } else {
+                $steps[] = 'WARNING: nextcloud KC client not found in broker realm (install Nextcloud first)';
+            }
+        }
+
+        AuditLogger::log('realm.federation_repaired', $realm);
+        $summary = implode('; ', $steps);
+        return redirect()->route('super.realms.edit', $realm)->with('success', "Federation repaired: {$summary}. Users must log out and back in for group changes to take effect.");
     }
 
     public function toggle(string $realm)
