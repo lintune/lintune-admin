@@ -113,9 +113,20 @@ class SuperRealmController extends Controller
         $mailboxCounts  = Mailbox::whereIn('realm', $realmNames)
             ->selectRaw('realm, count(*) as total')->groupBy('realm')
             ->pluck('total', 'realm');
-        $nextcloudCounts = NextcloudUser::whereIn('realm', $realmNames)
-            ->selectRaw('realm, count(*) as total')->groupBy('realm')
-            ->pluck('total', 'realm');
+
+        // NC counts: members of the nextcloud KC group in each NC-enabled realm
+        $nextcloudCounts = collect();
+        foreach ($realmNames as $r) {
+            if (!$domainMaps->get($r)?->nextcloud_enabled) continue;
+            try {
+                $groups  = \Http::withToken($token)->get("{$base}/admin/realms/{$r}/groups", ['search' => 'nextcloud'])->json();
+                $ncGroup = collect((array) $groups)->firstWhere('name', 'nextcloud');
+                if ($ncGroup) {
+                    $members           = \Http::withToken($token)->get("{$base}/admin/realms/{$r}/groups/{$ncGroup['id']}/members", ['max' => 1000])->json();
+                    $nextcloudCounts[$r] = count((array) $members);
+                }
+            } catch (\Throwable) {}
+        }
 
         return view('super.realms', [
             'realms'             => $realms,
@@ -248,6 +259,28 @@ class SuperRealmController extends Controller
 
         if (!$secret) return;
 
+        // Create the nextcloud group in the tenant realm so it exists for access control.
+        // 409 = already exists (idempotent).
+        \Http::withToken($token)->post("{$base}/admin/realms/{$realm}/groups", ['name' => 'nextcloud']);
+
+        // Add a groups claim mapper to broker-realm-client so the tenant realm includes
+        // group names in the token it sends to the broker IdP.
+        \Http::withToken($token)->post(
+            "{$base}/admin/realms/{$realm}/clients/{$clientId}/protocol-mappers/models",
+            [
+                'name'           => 'groups',
+                'protocol'       => 'openid-connect',
+                'protocolMapper' => 'oidc-group-membership-mapper',
+                'config'         => [
+                    'full.path'            => 'false',
+                    'id.token.claim'       => 'false',
+                    'access.token.claim'   => 'true',
+                    'userinfo.token.claim' => 'false',
+                    'claim.name'           => 'groups',
+                ],
+            ]
+        );
+
         // Create the Organization first so we have its ID for the link step below.
         $orgRes = \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/organizations", [
             'name'    => $realm,
@@ -327,6 +360,20 @@ class SuperRealmController extends Controller
                 'syncMode'       => 'INHERIT',
                 'claim'          => 'email',
                 'user.attribute' => 'email',
+            ],
+        ]);
+
+        // Import the groups claim from the tenant realm token into the nc_groups user
+        // attribute on the broker realm user so the nextcloud KC client can pass it through.
+        \Http::withToken($token)->post("{$base}/admin/realms/{$brokerRealm}/identity-provider/instances/{$realm}/mappers", [
+            'name'                   => 'nc_groups',
+            'identityProviderAlias'  => $realm,
+            'identityProviderMapper' => 'oidc-user-attribute-idp-mapper',
+            'config' => [
+                'syncMode'               => 'INHERIT',
+                'claim'                  => 'groups',
+                'user.attribute'         => 'nc_groups',
+                'are.claim.values.regex' => 'false',
             ],
         ]);
     }

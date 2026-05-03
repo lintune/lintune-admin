@@ -383,7 +383,10 @@ class InstallController extends Controller
             'webOrigins'                => [$ncUrl],
         ]);
 
-        if ($clientRes->status() === 409) {
+        $kcClientId = null;
+        if ($clientRes->status() === 201) {
+            $kcClientId = basename($clientRes->header('Location'));
+        } elseif ($clientRes->status() === 409) {
             // Already exists (retry) — fetch the current secret
             $clients = \Http::withToken($kcToken)
                 ->get("{$kcBase}/admin/realms/{$brokerRealm}/clients", ['clientId' => 'nextcloud'])
@@ -395,6 +398,36 @@ class InstallController extends Controller
             }
         } elseif ($clientRes->failed()) {
             throw new \RuntimeException('Failed to create Nextcloud OIDC client in Keycloak: ' . $clientRes->body());
+        }
+
+        // Add nc_groups → groups attribute mapper on the nextcloud KC client so the broker
+        // realm includes group names in Nextcloud tokens (enables user_oidc group restriction).
+        if ($kcClientId) {
+            $mappers     = \Http::withToken($kcToken)
+                ->get("{$kcBase}/admin/realms/{$brokerRealm}/clients/{$kcClientId}/protocol-mappers/models")
+                ->json();
+            $mapperExists = collect((array) $mappers)->contains(fn($m) => ($m['name'] ?? '') === 'nc_groups');
+
+            if (!$mapperExists) {
+                \Http::withToken($kcToken)->post(
+                    "{$kcBase}/admin/realms/{$brokerRealm}/clients/{$kcClientId}/protocol-mappers/models",
+                    [
+                        'name'           => 'nc_groups',
+                        'protocol'       => 'openid-connect',
+                        'protocolMapper' => 'oidc-usermodel-attribute-mapper',
+                        'config'         => [
+                            'user.attribute'       => 'nc_groups',
+                            'claim.name'           => 'groups',
+                            'jsonType.label'       => 'String',
+                            'id.token.claim'       => 'false',
+                            'access.token.claim'   => 'true',
+                            'userinfo.token.claim' => 'false',
+                            'multivalued'          => 'true',
+                            'aggregate.attrs'      => 'false',
+                        ],
+                    ]
+                );
+            }
         }
 
         $ssh->configureNextcloudOidc($kcBase, $brokerRealm, 'nextcloud', $clientSecret);

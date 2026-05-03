@@ -60,7 +60,7 @@ The installer runs before SETUP_COMPLETE is set and is blocked afterward.
 **Stages** — keycloak is always first; mailcow and nextcloud are optional depending on what the operator chose on the configure screen:
 1. `keycloak` — ensureDocker → installKeycloak → wait for KC ready → setupKeycloak (OIDC client, broker realm, service account, writes .env) → **configureBrokerHomeIdpDiscovery** (Organizations enabled, `broker-home-idp-discovery` browser flow created and bound)
 2. `mailcow` — ensureDocker → installMailcow (injects API_KEY + API_ALLOW_FROM into mailcow.conf, captures key) → postConfigureMailcow (new superadmin via DB, delete default admin) → Setting::set mailcow.url + mailcow.api_key (encrypted)
-3. `nextcloud` — ensureDocker → installNextcloud (5-phase, creates lintune-svc + operator accounts) → create `nextcloud` OIDC client in Keycloak broker realm → configureNextcloudOidc (installs user_oidc app, runs occ user_oidc:provider) → Setting::set nextcloud credentials + oidc_client_id + oidc_client_secret
+3. `nextcloud` — ensureDocker → installNextcloud (5-phase, creates lintune-svc + operator accounts) → create `nextcloud` OIDC client in Keycloak broker realm + add `nc_groups` attribute mapper on it → configureNextcloudOidc (installs user_oidc app, runs occ user_oidc:provider with group restriction) → Setting::set nextcloud credentials + oidc_client_id + oidc_client_secret
 
 **SSE stream** — `GET /install/stream/{key}` with query params:
 - `?stage=keycloak|mailcow|nextcloud` (default: keycloak)
@@ -110,8 +110,8 @@ loading the file-written `SETUP_COMPLETE=true` on the same container run.
   4. **Wait + service account** — polls `occ status --output=json | jq '.installed'` (60×10s) until Nextcloud is ready. Reads `secrets.NEXTCLOUD_PASSWORD` from `configuration.json` (captured as `nc_admin_pass`). Creates `lintune-svc` service account via `docker exec -u www-data ... php occ user:add --password-from-env --group="admin"` with `openssl rand -hex 24` password (captured as `nc_svc_pass`).
   5. **Operator account** — creates the MSP operator's own Nextcloud account (same username/password as the install form) via `occ user:add --group="admin"`.
   
-  `InstallController::runNextcloudStage()` saves captured values to `settings` encrypted: `nextcloud.aio_passphrase`, `nextcloud.admin_password`, `nextcloud.service_user` (`lintune-svc`), `nextcloud.service_password`. Then creates a `nextcloud` OIDC client in Keycloak's broker realm and calls `configureNextcloudOidc`. Saves `nextcloud.oidc_client_id` and `nextcloud.oidc_client_secret` to `settings`.
-- `configureNextcloudOidc($kcBaseUrl, $brokerRealm, $clientId, $clientSecret)` — installs the `user_oidc` app via `occ app:install user_oidc` (falls back to `app:enable` if already installed), then runs `occ user_oidc:provider Keycloak` with the discovery URI pointing at `{kcBaseUrl}/realms/{brokerRealm}/.well-known/openid-configuration`. Credentials injected via base64. Key flags: `--mapping-uid=email` (use email claim as NC user ID, not the Keycloak UUID sub claim), `--unique-uid=0` (no provider-name suffix appended). The NC user ID equals the user's email address, matching what `UserController::toggleNextcloud()` creates. Note: user_oidc has no `--auto-provision` flag and `--group-restrict-login-to-whitelist` checks JWT groups (not NC groups) — since Keycloak does not include a groups claim by default, that flag would block everyone. Auto-provisioning is currently on; restricting to provisioned users requires a Keycloak groups claim approach (future work).
+  `InstallController::runNextcloudStage()` saves captured values to `settings` encrypted: `nextcloud.aio_passphrase`, `nextcloud.admin_password`, `nextcloud.service_user` (`lintune-svc`), `nextcloud.service_password`. Then creates a `nextcloud` OIDC client in Keycloak's broker realm, adds the `nc_groups` attribute mapper to it, and calls `configureNextcloudOidc`. Saves `nextcloud.oidc_client_id` and `nextcloud.oidc_client_secret` to `settings`.
+- `configureNextcloudOidc($kcBaseUrl, $brokerRealm, $clientId, $clientSecret)` — installs the `user_oidc` app via `occ app:install user_oidc` (falls back to `app:enable` if already installed), then runs `occ user_oidc:provider Keycloak` with the discovery URI pointing at `{kcBaseUrl}/realms/{brokerRealm}/.well-known/openid-configuration`. Credentials injected via base64. Key flags: `--mapping-uid=email` (use email claim as NC user ID, not the Keycloak UUID sub claim), `--unique-uid=0` (no provider-name suffix appended), `--mapping-groups=groups` (read group names from the `groups` JWT claim), `--group-restrict-login-to-whitelist=1` (only allow login if user is in a whitelisted group), `--group-whitelist-regex=nextcloud` (the whitelist is the literal `nextcloud` group). Only users in the `nextcloud` KC group in their tenant realm can log in; others are blocked at the user_oidc layer before NC even creates an account.
 - `postConfigureMailcow($adminUsername, $adminPassword)` — runs after `installMailcow()`; polls for the default `admin` row in MySQL (polling on admin row existence, not just MySQL ping — Mailcow's PHP init scripts run after MySQL accepts connections), hashes the password via `doveadm pw -s SSHA256` (dovecot-mailcow container, `< /dev/null` required to prevent heredoc stdin hang), inserts the new superadmin, then deletes the default admin and all associated rows (`tfa`, `domain_admins`, `admin`). No API involvement — pure DB operations.
   > **TODO (pre-production):** The Mailcow superadmin currently reuses the lintune-admin operator credentials (`admin_username` / `admin_password` from the install form). For production, `postConfigureMailcow` should generate its own random password and store it encrypted in `settings` (like Nextcloud does), so the Mailcow web UI is not protected by the same secret as the lintune-admin panel.
 - `$clean=true` wipes the install directory (docker compose down + rm -rf) before reinstalling. Used when the installer frontend sends `?retry=1`.
@@ -150,6 +150,34 @@ Configured during the Keycloak install stage via `configureBrokerHomeIdpDiscover
 - The IdP instance is deleted from the broker realm
 
 **Non-fatal:** if Keycloak does not support Organizations (pre-25), the setup logs a warning and continues. The rest of the install still succeeds; Home IdP Discovery simply won't be active.
+
+## Nextcloud access control via Keycloak groups
+
+Nextcloud access is gated by membership in a `nextcloud` group in the user's tenant realm. The claim is passed through a 3-step chain so that user_oidc in Nextcloud can enforce it.
+
+**Chain (set up at provisioning time):**
+1. **Tenant realm** has a `nextcloud` KC group. `broker-realm-client` (the OIDC client the broker IdP uses to authenticate against the tenant) has an `oidc-group-membership-mapper` that adds all group names to a `groups` claim in the access token.
+2. **Broker realm IdP** (the IdP for this tenant) has an `oidc-user-attribute-idp-mapper` named `nc_groups` that reads the `groups` claim from the tenant token and stores it as the `nc_groups` user attribute on the broker realm user (syncMode INHERIT, so it updates on every login).
+3. **Broker realm `nextcloud` OIDC client** has an `oidc-usermodel-attribute-mapper` named `nc_groups` that reads the `nc_groups` user attribute and emits it as a multivalued `groups` claim in the Nextcloud access token.
+
+**Nextcloud side:**
+- `user_oidc` configured with `--mapping-groups=groups --group-restrict-login-to-whitelist=1 --group-whitelist-regex=nextcloud`.
+- On login, user_oidc checks if the JWT `groups` claim contains `nextcloud`. If not, login is rejected before NC creates an account.
+- If yes, NC auto-provisions the account on first login (no pre-provisioning needed).
+
+**Admin operations (lintune-dash `UserController::toggleNextcloud()`):**
+- Enable → `PUT /admin/realms/{realm}/users/{userId}/groups/{groupId}` (add to `nextcloud` KC group). No NC OCS API call.
+- Disable → `DELETE /admin/realms/{realm}/users/{userId}/groups/{groupId}` (remove from KC group) + `DELETE ocs/v1.php/cloud/users/{email}` (clean up NC account).
+- State is derived from KC group membership, NOT from the `nextcloud_users` DB table.
+
+**Super admin NC count (`SuperRealmController::index()`):**
+- Per-realm NC user count is fetched from KC: `GET /admin/realms/{realm}/groups?search=nextcloud` → `GET /admin/realms/{realm}/groups/{id}/members?max=1000`. Only done for NC-enabled realms.
+
+**Where each piece is provisioned:**
+- `nextcloud` group in tenant realm: `setupBrokerFederation()` in `SuperRealmController`
+- `oidc-group-membership-mapper` on `broker-realm-client`: `setupBrokerFederation()`
+- `oidc-user-attribute-idp-mapper` (`nc_groups`) on broker IdP: `setupBrokerFederation()`
+- `oidc-usermodel-attribute-mapper` (`nc_groups`) on broker `nextcloud` client: `runNextcloudStage()` in `InstallController`
 
 ## Middleware
 - `RequireSuperAuth` — checks `session('super_access_token')`; redirects to super.login if absent.
