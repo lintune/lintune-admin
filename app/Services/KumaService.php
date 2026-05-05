@@ -6,27 +6,30 @@ use PDO;
 
 class KumaService
 {
-    private string $dbPath;
-
-    public function __construct()
-    {
-        $this->dbPath = env('KUMA_DB_PATH', '/opt/kuma_data/kuma.db');
-    }
-
     private function connect(): PDO
     {
-        $pdo = new PDO('sqlite:' . $this->dbPath);
+        $pdo = new PDO(
+            sprintf('mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
+                env('KUMA_DB_HOST', 'db'),
+                env('KUMA_DB_PORT', '3306'),
+                env('KUMA_DB_NAME', 'kuma')
+            ),
+            env('KUMA_DB_USERNAME', 'lintune'),
+            env('KUMA_DB_PASSWORD', '')
+        );
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $pdo->exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;');
         return $pdo;
     }
 
+    // Polls until Kuma has created its schema (user table present). Returns false on timeout.
     public function waitForDb(int $attempts = 30, int $sleepSeconds = 2): bool
     {
         for ($i = 0; $i < $attempts; $i++) {
-            if (file_exists($this->dbPath)) {
+            try {
+                $pdo = $this->connect();
+                $pdo->query('SELECT 1 FROM `user` LIMIT 1');
                 return true;
-            }
+            } catch (\Throwable) {}
             sleep($sleepSeconds);
         }
         return false;
@@ -37,13 +40,13 @@ class KumaService
     {
         $pdo = $this->connect();
 
-        $existing = (int) $pdo->query('SELECT COUNT(*) FROM user')->fetchColumn();
+        $existing = (int) $pdo->query('SELECT COUNT(*) FROM `user`')->fetchColumn();
         if ($existing > 0) {
-            return (int) $pdo->query('SELECT id FROM user LIMIT 1')->fetchColumn();
+            return (int) $pdo->query('SELECT id FROM `user` LIMIT 1')->fetchColumn();
         }
 
         $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 10]);
-        $stmt = $pdo->prepare('INSERT INTO user (username, password, active) VALUES (?, ?, 1)');
+        $stmt = $pdo->prepare('INSERT INTO `user` (username, password, active) VALUES (?, ?, 1)');
         $stmt->execute([$username, $hash]);
         return (int) $pdo->lastInsertId();
     }
@@ -51,12 +54,10 @@ class KumaService
     // Removes a monitor by exact name. No-op if not found.
     public function removeMonitor(string $name): void
     {
-        if (!file_exists($this->dbPath)) {
-            return;
-        }
-        $pdo = $this->connect();
-        $stmt = $pdo->prepare('DELETE FROM monitor WHERE name = ?');
-        $stmt->execute([$name]);
+        try {
+            $pdo = $this->connect();
+            $pdo->prepare('DELETE FROM monitor WHERE name = ?')->execute([$name]);
+        } catch (\Throwable) {}
     }
 
     // Adds an HTTP monitor. Idempotent by name — returns existing ID if already present.
@@ -70,14 +71,14 @@ class KumaService
             return (int) $row['id'];
         }
 
-        $userId = $pdo->query('SELECT id FROM user LIMIT 1')->fetchColumn() ?: 1;
+        $userId = $pdo->query('SELECT id FROM `user` LIMIT 1')->fetchColumn() ?: 1;
 
         $stmt = $pdo->prepare("
             INSERT INTO monitor
-                (name, active, user_id, interval, url, type, weight, maxretries,
+                (name, active, user_id, `interval`, url, type, weight, maxretries,
                  ignore_tls, retry_interval, method, accepted_statuscodes_json, created_date)
             VALUES
-                (?, 1, ?, 60, ?, 'http', 2000, 1, ?, 60, 'GET', '[\"200-299\"]', DATETIME('now'))
+                (?, 1, ?, 60, ?, 'http', 2000, 1, ?, 60, 'GET', '[\"200-299\"]', NOW())
         ");
         $stmt->execute([$name, $userId, $url, $ignoreTls ? 1 : 0]);
         return (int) $pdo->lastInsertId();
@@ -88,9 +89,6 @@ class KumaService
     // admin_only: true for monitors whose name contains "aio" (Nextcloud AIO master container)
     public function getStatus(): array
     {
-        if (!file_exists($this->dbPath)) {
-            return [];
-        }
         try {
             $pdo = $this->connect();
             $rows = $pdo->query("
