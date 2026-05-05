@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Super;
 use App\Http\Controllers\Controller;
 use App\Models\Setting;
 use App\Services\AuditLogger;
+use App\Services\KumaService;
 use Illuminate\Http\Request;
 
 class SettingsController extends Controller
@@ -66,6 +67,23 @@ class SettingsController extends Controller
         Setting::set('nextcloud.default_quota', $request->nextcloud_quota);
 
         AuditLogger::log('settings.updated');
+
+        // Sync Kuma monitors for services whose URLs are now configured (non-fatal)
+        try {
+            $kuma = new KumaService();
+            if (file_exists(env('KUMA_DB_PATH', '/opt/kuma_data/kuma.db'))) {
+                $kcUrl = rtrim($request->keycloak_url, '/');
+                $kuma->addMonitor('Keycloak', "{$kcUrl}/realms/master");
+
+                $mailcowUrl = rtrim($request->mailcow_url, '/');
+                $kuma->addMonitor('Mailcow', $mailcowUrl);
+
+                if ($request->filled('nextcloud_url')) {
+                    $kuma->addMonitor('Nextcloud', rtrim($request->nextcloud_url, '/'));
+                }
+            }
+        } catch (\Throwable) {}
+
         return back()->with('success', 'Settings saved.');
     }
 }

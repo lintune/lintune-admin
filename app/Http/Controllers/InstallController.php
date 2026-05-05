@@ -438,7 +438,7 @@ class InstallController extends Controller
         Setting::set('nextcloud.oidc_client_secret', $clientSecret, encrypted: true);
 
         $this->addKumaMonitor('Nextcloud', $ncUrl);
-        $this->addKumaMonitor('Nextcloud AIO', "https://{$ncDomain}:8080");
+        $this->addKumaMonitor('Nextcloud AIO', "https://{$ncDomain}:8080", ignoreTls: true);
     }
 
     private function initKuma(array $params, string $kcInternalBase, string $keycloakUrl, string $kcAdminUsername, string $kcAdminPassword, array &$log, callable $emit): void
@@ -449,49 +449,17 @@ class InstallController extends Controller
 
             $adminUser = $params['admin_username'] ?? 'admin';
             $adminPass = $params['admin_password'] ?? '';
-            $kumaUrl   = rtrim(env('KUMA_URL', ''), '/');
             $kuma      = new \App\Services\KumaService();
 
-            $kuma->waitForReady();
-            $kuma->setup($adminUser, $adminPass); // idempotent — silently fails if already set up
-
-            $token  = $kuma->login($adminUser, $adminPass);
-            $apiKey = $kuma->createApiKey($token, 'lintune');
-            Setting::set('kuma.api_key', $apiKey, encrypted: true);
-            Setting::set('kuma.admin_user', $adminUser);
-
-            // Add Keycloak monitor
-            $kuma->addMonitor($apiKey, 'Keycloak', "{$keycloakUrl}/realms/master");
-
-            // Configure OIDC using KC master realm (non-fatal — Kuma API may vary by version)
-            try {
-                $kumaClientSecret = Str::random(40);
-                $kcToken = $this->keycloakAdminToken($kcInternalBase);
-
-                \Http::withToken($kcToken)->post("{$kcInternalBase}/admin/realms/master/clients", [
-                    'clientId'                  => 'uptime-kuma',
-                    'enabled'                   => true,
-                    'publicClient'              => false,
-                    'standardFlowEnabled'       => true,
-                    'directAccessGrantsEnabled' => false,
-                    'secret'                    => $kumaClientSecret,
-                    'redirectUris'              => ["{$kumaUrl}/api/auth/callback"],
-                    'webOrigins'                => [$kumaUrl],
-                ]);
-
-                $kuma->configureOidc(
-                    $token,
-                    "{$keycloakUrl}/realms/master/.well-known/openid-configuration",
-                    'uptime-kuma',
-                    $kumaClientSecret,
-                    "{$kumaUrl}/api/auth/callback"
-                );
-
-                Setting::set('kuma.oidc_client_secret', $kumaClientSecret, encrypted: true);
-                $emit('log', ['line' => '  Kuma OIDC configured with Keycloak master realm.']);
-            } catch (\Throwable $e) {
-                $emit('log', ['line' => '  Warning: Kuma OIDC setup skipped: ' . $e->getMessage()]);
+            if (!$kuma->waitForDb()) {
+                throw new \RuntimeException('Kuma database not ready after 60s.');
             }
+
+            // Create the operator account in Kuma (same credentials as lintune-admin)
+            $kuma->ensureUser($adminUser, $adminPass);
+
+            // Register Keycloak as the first monitor
+            $kuma->addMonitor('Keycloak', "{$keycloakUrl}/realms/master");
 
             $emit('log', ['line' => '  Uptime Kuma ready.']);
             $log[] = '  Uptime Kuma ready.';
@@ -501,15 +469,10 @@ class InstallController extends Controller
         }
     }
 
-    private function addKumaMonitor(string $name, string $url): void
+    private function addKumaMonitor(string $name, string $url, bool $ignoreTls = false): void
     {
         try {
-            $rawKey = Setting::get('kuma.api_key');
-            if (!$rawKey) {
-                return;
-            }
-            $apiKey = decrypt($rawKey);
-            (new \App\Services\KumaService())->addMonitor($apiKey, $name, $url);
+            (new \App\Services\KumaService())->addMonitor($name, $url, $ignoreTls);
         } catch (\Throwable) {
             // Non-fatal — monitoring is secondary to the actual install
         }
