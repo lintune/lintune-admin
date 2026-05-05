@@ -447,15 +447,15 @@ class InstallController extends Controller
             $emit('log', ['line' => '→ Initializing Uptime Kuma...']);
             $log[] = '→ Initializing Uptime Kuma...';
 
-            $adminUser = $params['admin_username'] ?? 'admin';
-            $adminPass = $params['admin_password'] ?? '';
+            $adminUser = env('KUMA_ADMIN_USER', 'admin');
+            $adminPass = env('KUMA_ADMIN_PASSWORD', '');
             $kuma      = new \App\Services\KumaService();
 
             if (!$kuma->waitForDb()) {
                 throw new \RuntimeException('Kuma database not ready after 60s.');
             }
 
-            // Create the operator account in Kuma (same credentials as lintune-admin)
+            // User was pre-seeded by install.sh; ensureUser is a no-op if already exists.
             $kuma->ensureUser($adminUser, $adminPass);
 
             // Register Keycloak as the first monitor
