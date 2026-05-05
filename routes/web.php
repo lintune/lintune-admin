@@ -71,6 +71,7 @@ Route::prefix('super')->name('super.')->middleware(SetupComplete::class)->group(
             Route::post('/realms/{realm}/repair-federation', [SuperRealmController::class, 'repairFederation'])->name('realms.repair-federation');
             Route::delete('/realms/{realm}', [SuperRealmController::class, 'destroy'])->name('realms.destroy');
             Route::get('/status', [StatusController::class, 'index'])->name('status');
+            Route::get('/services', [StatusController::class, 'show'])->name('services');
             Route::get('/audit-logs', [AuditLogController::class, 'index'])->name('audit-logs');
             Route::get('/settings', [SettingsController::class, 'show'])->name('settings');
             Route::put('/settings', [SettingsController::class, 'update'])->name('settings.update');

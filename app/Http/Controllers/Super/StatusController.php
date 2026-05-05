@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Cache;
 
 class StatusController extends Controller
 {
-    // Returns all monitor statuses including admin-only ones (AIO).
+    // JSON endpoint — used by the navbar dot indicators.
     public function index()
     {
         $statuses = Cache::remember('kuma.status.full', 30, function () {
@@ -15,5 +15,15 @@ class StatusController extends Controller
         });
 
         return response()->json($statuses);
+    }
+
+    // Full status page.
+    public function show()
+    {
+        $statuses = Cache::remember('kuma.status.full', 30, function () {
+            return (new KumaService())->getStatus();
+        });
+
+        return view('super.status', ['monitors' => $statuses]);
     }
 }

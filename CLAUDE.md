@@ -9,7 +9,7 @@ Handles realm provisioning, service integration setup, and platform-level config
 app/Http/Controllers/Super/   — all controllers (SuperRealmController, SettingsController, etc.)
 app/Http/Middleware/           — RequireSuperAuth, SetupComplete, WizardComplete
 app/Models/                   — DomainRealmMap, RealmConfig, Setting, Mailbox, NextcloudUser, AuditLog
-app/Services/                 — AuditLogger, MailcowService, NextcloudService, SshInstaller
+app/Services/                 — AuditLogger, KumaService, MailcowService, NextcloudService, SshInstaller
 resources/views/super/        — all Blade views (layout.blade.php, realms.blade.php, realm-edit.blade.php, etc.)
 resources/views/install/      — installer views (welcome, server-type, configure, progress, done, manual)
 routes/web.php                — all routes under /install (pre-auth) and /super prefix (guarded by RequireSuperAuth)
@@ -47,10 +47,27 @@ database/migrations/          — ALL migrations live here (never in lintune-das
 - Mailcow API uses `X-API-Key` header.
 - Nextcloud uses Basic Auth + `OCS-APIRequest: true` header.
 
+## Uptime Kuma integration
+
+`app/Services/KumaService.php` wraps the custom Lintune REST API added to the uptime-kuma fork.
+
+**Setup:** `initKuma()` in `InstallController` POSTs to `/api/lintune/setup` with Keycloak admin credentials.
+The returned API key is stored encrypted as `Setting::set('kuma.api_key', $key, true)`. No Kuma credentials
+appear in env files.
+
+**KumaService methods:**
+- `addMonitor(string $name, string $url, bool $ignoreTls = false): int` — idempotent: GETs first, returns existing ID if name matches; POSTs to create otherwise.
+- `removeMonitor(string $name): void` — finds by name, DELETEs by ID. Silent on missing.
+- `getStatus(): array` — returns `[{id, name, url, status, admin_only}]`. Status: 1=Up, 0=Down, 2=Unknown, 3=Maintenance.
+
+**Status page:** `GET /super/services` → `StatusController::show()` → `super/status.blade.php`. Shows a card per monitor with colored badge and icon. Refreshes every 30s.
+**Navbar dots:** `GET /super/status` → `StatusController::index()` (JSON only) — still used by the navbar dot indicators; the two routes are separate.
+
 ## UI stack
 - Bootstrap 5.3.3 + Bootstrap Icons 1.11.3 + AdminLTE 4.0.0-rc2.
 - Layout: `resources/views/super/layout.blade.php` — includes session timer, spinner overlay, sidebar nav.
 - Spinner overlay: shown automatically on any form submit. Add `data-no-spinner` to forms that should skip it (e.g. logout).
+- Sidebar items: Realms, Service Status (`/super/services`), Audit Log, Settings.
 - Use `@push('scripts')` for page-specific JS.
 
 ## Install flow (pre-auth, /install/*)

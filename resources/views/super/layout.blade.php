@@ -63,6 +63,12 @@
             </a>
           </li>
           <li class="nav-item">
+            <a href="{{ route('super.services') }}" class="nav-link {{ request()->routeIs('super.services') ? 'active' : '' }}">
+              <i class="nav-icon bi bi-activity"></i>
+              <p>Service Status</p>
+            </a>
+          </li>
+          <li class="nav-item">
             <a href="{{ route('super.audit-logs') }}" class="nav-link {{ request()->routeIs('super.audit-logs') ? 'active' : '' }}">
               <i class="nav-icon bi bi-journal-text"></i>
               <p>Audit Log</p>
