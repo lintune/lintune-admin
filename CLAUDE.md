@@ -14,6 +14,7 @@ resources/views/super/        — all Blade views (layout.blade.php, realms.blad
 resources/views/install/      — installer views (welcome, server-type, configure, progress, done, manual)
 routes/web.php                — all routes under /install (pre-auth) and /super prefix (guarded by RequireSuperAuth)
 database/migrations/          — ALL migrations live here (never in lintune-dash)
+docker/                       — Dockerfile, nginx.conf, entrypoint.sh for the container image
 ```
 
 ## Architecture rules
