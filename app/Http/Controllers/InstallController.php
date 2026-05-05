@@ -444,28 +444,32 @@ class InstallController extends Controller
     private function initKuma(array $params, string $kcInternalBase, string $keycloakUrl, string $kcAdminUsername, string $kcAdminPassword, array &$log, callable $emit): void
     {
         try {
-            $emit('log', ['line' => '→ Initializing Uptime Kuma...']);
-            $log[] = '→ Initializing Uptime Kuma...';
+            $emit('log', ['line' => '→ Setting up Uptime Kuma...']);
 
-            $adminUser = env('KUMA_ADMIN_USER', 'admin');
-            $adminPass = env('KUMA_ADMIN_PASSWORD', '');
-            $kuma      = new \App\Services\KumaService();
+            $kumaUrl  = rtrim(env('KUMA_INTERNAL_URL', 'http://uptime-kuma:3001'), '/');
+            $response = \Http::post("{$kumaUrl}/api/lintune/setup", [
+                'username' => $kcAdminUsername,
+                'password' => $kcAdminPassword,
+            ]);
 
-            if (!$kuma->waitForDb()) {
-                throw new \RuntimeException('Kuma database not ready after 60s.');
+            if ($response->failed()) {
+                throw new \RuntimeException("Setup returned HTTP {$response->status()}: {$response->body()}");
             }
 
-            // User was pre-seeded by install.sh; ensureUser is a no-op if already exists.
-            $kuma->ensureUser($adminUser, $adminPass);
+            $apiKey = $response->json()['api_key'] ?? null;
+            if (!$apiKey) {
+                throw new \RuntimeException('No API key in setup response: ' . $response->body());
+            }
 
-            // Register Keycloak as the first monitor
-            $kuma->addMonitor('Keycloak', "{$keycloakUrl}/realms/master");
+            Setting::set('kuma.api_key', $apiKey, true);
+
+            (new \App\Services\KumaService())->addMonitor('Keycloak', "{$keycloakUrl}/realms/master");
 
             $emit('log', ['line' => '  Uptime Kuma ready.']);
             $log[] = '  Uptime Kuma ready.';
         } catch (\Throwable $e) {
-            $emit('log', ['line' => '  Warning: Kuma init failed (non-fatal): ' . $e->getMessage()]);
-            $log[] = '  Warning: Kuma init failed: ' . $e->getMessage();
+            $emit('log', ['line' => '  Warning: Kuma setup failed (non-fatal): ' . $e->getMessage()]);
+            $log[] = '  Warning: Kuma setup failed: ' . $e->getMessage();
         }
     }
 

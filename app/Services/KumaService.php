@@ -2,113 +2,77 @@
 
 namespace App\Services;
 
-use PDO;
+use App\Models\Setting;
+use Illuminate\Support\Facades\Http;
 
 class KumaService
 {
-    private function connect(): PDO
+    private string $baseUrl;
+    private string $apiKey;
+
+    public function __construct()
     {
-        $pdo = new PDO(
-            sprintf('mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4',
-                env('KUMA_DB_HOST', 'db'),
-                env('KUMA_DB_PORT', '3306'),
-                env('KUMA_DB_NAME', 'kuma')
-            ),
-            env('KUMA_DB_USERNAME', 'lintune'),
-            env('KUMA_DB_PASSWORD', '')
-        );
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        return $pdo;
+        $this->baseUrl = rtrim(env('KUMA_INTERNAL_URL', 'http://uptime-kuma:3001'), '/');
+        $this->apiKey  = Setting::get('kuma.api_key', '');
     }
 
-    // Polls until Kuma has created its schema (user table present). Returns false on timeout.
-    public function waitForDb(int $attempts = 30, int $sleepSeconds = 2): bool
+    private function request(string $method, string $path, array $body = []): array
     {
-        for ($i = 0; $i < $attempts; $i++) {
-            try {
-                $pdo = $this->connect();
-                $pdo->query('SELECT 1 FROM `user` LIMIT 1');
-                return true;
-            } catch (\Throwable) {}
-            sleep($sleepSeconds);
-        }
-        return false;
-    }
+        $http = Http::withHeaders([
+            'Authorization' => 'Basic ' . base64_encode('api:' . $this->apiKey),
+        ])->timeout(10);
 
-    // Creates the first admin user if no user exists yet. Idempotent.
-    public function ensureUser(string $username, string $password): int
-    {
-        $pdo = $this->connect();
+        $url = $this->baseUrl . $path;
 
-        $existing = (int) $pdo->query('SELECT COUNT(*) FROM `user`')->fetchColumn();
-        if ($existing > 0) {
-            return (int) $pdo->query('SELECT id FROM `user` LIMIT 1')->fetchColumn();
+        $response = match (strtolower($method)) {
+            'get'    => $http->get($url),
+            'post'   => $http->post($url, $body),
+            'delete' => $http->delete($url),
+            default  => throw new \InvalidArgumentException("Unsupported method: {$method}"),
+        };
+
+        if ($response->failed()) {
+            throw new \RuntimeException("Kuma API error: HTTP {$response->status()} on {$method} {$path}");
         }
 
-        $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 10]);
-        $stmt = $pdo->prepare('INSERT INTO `user` (username, password, active) VALUES (?, ?, 1)');
-        $stmt->execute([$username, $hash]);
-        return (int) $pdo->lastInsertId();
+        return $response->json() ?? [];
     }
 
-    // Removes a monitor by exact name. No-op if not found.
+    public function addMonitor(string $name, string $url, bool $ignoreTls = false): int
+    {
+        $monitors = $this->request('get', '/api/lintune/monitors');
+        foreach ($monitors as $m) {
+            if ($m['name'] === $name) {
+                return (int) $m['id'];
+            }
+        }
+
+        $result = $this->request('post', '/api/lintune/monitors', [
+            'name'      => $name,
+            'url'       => $url,
+            'ignoreTls' => $ignoreTls,
+        ]);
+
+        return (int) ($result['id'] ?? 0);
+    }
+
     public function removeMonitor(string $name): void
     {
         try {
-            $pdo = $this->connect();
-            $pdo->prepare('DELETE FROM monitor WHERE name = ?')->execute([$name]);
+            $monitors = $this->request('get', '/api/lintune/monitors');
+            foreach ($monitors as $m) {
+                if ($m['name'] === $name) {
+                    $this->request('delete', '/api/lintune/monitors/' . $m['id']);
+                    return;
+                }
+            }
         } catch (\Throwable) {}
     }
 
-    // Adds an HTTP monitor. Idempotent by name — returns existing ID if already present.
-    public function addMonitor(string $name, string $url, bool $ignoreTls = false): int
-    {
-        $pdo = $this->connect();
-
-        $check = $pdo->prepare('SELECT id FROM monitor WHERE name = ?');
-        $check->execute([$name]);
-        if ($row = $check->fetch(PDO::FETCH_ASSOC)) {
-            return (int) $row['id'];
-        }
-
-        $userId = $pdo->query('SELECT id FROM `user` LIMIT 1')->fetchColumn() ?: 1;
-
-        $stmt = $pdo->prepare("
-            INSERT INTO monitor
-                (name, active, user_id, `interval`, url, type, weight, maxretries,
-                 ignore_tls, retry_interval, method, accepted_statuscodes_json, created_date)
-            VALUES
-                (?, 1, ?, 60, ?, 'http', 2000, 1, ?, 60, 'GET', '[\"200-299\"]', NOW())
-        ");
-        $stmt->execute([$name, $userId, $url, $ignoreTls ? 1 : 0]);
-        return (int) $pdo->lastInsertId();
-    }
-
-    // Returns [{id, name, status, url, admin_only}]
-    // status: 0=down, 1=up, 2=pending/unknown, 3=maintenance
-    // admin_only: true for monitors whose name contains "aio" (Nextcloud AIO master container)
     public function getStatus(): array
     {
         try {
-            $pdo = $this->connect();
-            $rows = $pdo->query("
-                SELECT m.id, m.name, m.url,
-                    COALESCE(h.status, 2) AS status
-                FROM monitor m
-                LEFT JOIN heartbeat h ON h.id = (
-                    SELECT MAX(id) FROM heartbeat WHERE monitor_id = m.id
-                )
-                WHERE m.active = 1
-                ORDER BY m.id
-            ")->fetchAll(PDO::FETCH_ASSOC);
-
-            return array_map(fn($row) => [
-                'id'         => (int) $row['id'],
-                'name'       => $row['name'],
-                'status'     => (int) $row['status'],
-                'url'        => $row['url'] ?? '',
-                'admin_only' => str_contains(strtolower($row['name'] ?? ''), 'aio'),
-            ], $rows);
+            return $this->request('get', '/api/lintune/monitors');
         } catch (\Throwable) {
             return [];
         }
