@@ -181,15 +181,19 @@ Nextcloud access is gated by membership in a `nextcloud` group in the user's ten
 3. **Broker realm IdP** (the IdP for this tenant) has an `oidc-user-attribute-idp-mapper` named `nc_groups` that reads the `groups` claim from the tenant token and stores it as the `nc_groups` user attribute on the broker realm user (syncMode FORCE, so it updates on every login).
 4. **Broker realm `nextcloud` OIDC client** has an `oidc-usermodel-attribute-mapper` named `nc_groups` that reads the `nc_groups` user attribute and emits it as a multivalued `groups` claim in the ID token, access token, and userinfo. **Must have `id.token.claim: true`** — `user_oidc`'s `getSyncGroupsOfToken()` reads `$idTokenPayload`; if the claim is absent from the ID token, `foreach()` crashes with "argument must be of type array|object, null given" and the login fails with "Unexpected error".
 
-**Nextcloud side:**
+**Access gate (user_oidc group whitelist):**
 - `user_oidc` configured with `--mapping-groups=groups --group-restrict-login-to-whitelist=1 --group-whitelist-regex=nextcloud`.
-- On login, user_oidc checks if the JWT `groups` claim contains `nextcloud`. If not, login is rejected before NC creates an account.
-- If yes, NC auto-provisions the account on first login (no pre-provisioning needed).
+- If user's `groups` claim does not contain `nextcloud`, user_oidc rejects login before NC creates an account.
+- NC accounts are **pre-provisioned via OCS** when NC access is enabled (`NextcloudService::createUser()`). Not auto-provisioned on first login.
+
+**Why no KC-side browser-flow gate:** KC CONDITIONAL sub-flows in the browser flow evaluate their conditions at flow start, before any authenticator has run — `context.getUser()` is null, so `Condition - User Role` with `negate=true` is always true and Deny Access fires immediately ("Invalid username or password" before the email form appears). The `user_oidc` group whitelist is the correct enforcement point because it runs after the user is authenticated and the token is issued.
 
 **Admin operations (lintune-dash `UserController::toggleNextcloud()`):**
-- Enable → `PUT /admin/realms/{realm}/users/{userId}/groups/{groupId}` (add to `nextcloud` KC group). No NC OCS API call.
-- Disable → `DELETE /admin/realms/{realm}/users/{userId}/groups/{groupId}` (remove from KC group) + `DELETE ocs/v1.php/cloud/users/{email}` (clean up NC account).
+- Enable → add to tenant `nextcloud` KC group + pre-provision NC account via `NextcloudService::createUser($email, $displayName)`.
+- Disable → remove from tenant KC group + `NextcloudService::deleteUser($email)`. Role revoked on next login via FORCE sync.
 - State is derived from KC group membership, NOT from the `nextcloud_users` DB table.
+
+**KC API note (auth flow updates):** Use `PUT /authentication/flows/{alias}/executions` (NOT `PUT /authentication/executions/{id}`) to update execution requirements. The second form returns 404.
 
 **Super admin NC count (`SuperRealmController::index()`):**
 - Per-realm NC user count is fetched from KC: `GET /admin/realms/{realm}/groups?search=nextcloud` → `GET /admin/realms/{realm}/groups/{id}/members?max=1000`. Only done for NC-enabled realms.

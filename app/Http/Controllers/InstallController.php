@@ -616,6 +616,20 @@ class InstallController extends Controller
         $log[] = $msg;
         $emit('log', ['line' => $msg]);
 
+        // Apply Lintune login theme to master + broker realm (non-fatal).
+        try {
+            foreach (['master', $brokerRealm] as $realmToTheme) {
+                $realmData = \Http::withToken($token)->get("{$internalBase}/admin/realms/{$realmToTheme}")->json();
+                \Http::withToken($token)->put("{$internalBase}/admin/realms/{$realmToTheme}",
+                    array_merge($realmData, ['loginTheme' => 'lintune']));
+            }
+            $msg = '→ Lintune login theme applied to master and broker realms.';
+        } catch (\Throwable $e) {
+            $msg = '→ NOTE: Theme application skipped: ' . $e->getMessage();
+        }
+        $log[] = $msg;
+        $emit('log', ['line' => $msg]);
+
         // Create lintune-service account
         $serviceUsername = 'lintune-service';
         $servicePassword = Str::password(32, symbols: false);

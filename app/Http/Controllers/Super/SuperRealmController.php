@@ -166,8 +166,9 @@ class SuperRealmController extends Controller
         $dashUrl    = rtrim(config('keycloak.dash_url'), '/');
 
         $realmRes = \Http::withToken($token)->post("{$base}/admin/realms", [
-            'realm'   => $realm,
-            'enabled' => true,
+            'realm'      => $realm,
+            'enabled'    => true,
+            'loginTheme' => 'lintune',
         ]);
 
         if ($realmRes->failed()) {
@@ -417,6 +418,7 @@ class SuperRealmController extends Controller
                 'are.claim.values.regex' => 'false',
             ],
         ]);
+
     }
 
     public function repairFederation(string $realm)

@@ -1,0 +1,161 @@
+/* ── Lintune KC Theme ───────────────────────────────────────────────────── */
+
+/* Font */
+body, input, button, select, textarea, label, .pf-v5-c-button {
+    font-family: 'Geist', 'Inter', system-ui, -apple-system, 'Helvetica Neue', sans-serif !important;
+}
+
+/* Background */
+.login-pf body,
+body#keycloak-bg {
+    background: #f0f2f5 !important;
+    background-image: none !important;
+}
+
+/* ── Layout ────────────────────────────────────────────────────────────── */
+
+.pf-v5-c-login {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem 1rem;
+}
+
+.pf-v5-c-login__container {
+    grid-template-columns: 28rem !important;
+    grid-template-areas: "header" "main" !important;
+    width: 100%;
+    max-width: 28rem;
+}
+
+/* ── Header (logo area above card) ─────────────────────────────────────── */
+
+#kc-header {
+    text-align: center;
+    padding-bottom: 1.5rem;
+}
+
+#kc-header-wrapper {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: inherit !important;
+    text-transform: none !important;
+    letter-spacing: normal !important;
+    color: inherit !important;
+}
+
+#kc-lintune-logo {
+    height: 44px;
+    width: auto;
+    display: block;
+}
+
+/* ── Card ────────────────────────────────────────────────────────────────── */
+
+.pf-v5-c-login__main {
+    border-radius: 12px !important;
+    box-shadow: 0 2px 16px rgba(14, 15, 18, 0.08) !important;
+    overflow: hidden;
+}
+
+/* Blue top accent bar (replaces blue from styles.css) */
+.pf-v5-c-login__main-header {
+    border-top: 3px solid #0d6efd !important;
+    padding-top: 1.5rem !important;
+}
+
+/* Card title */
+#kc-page-title {
+    font-size: 1.125rem !important;
+    font-weight: 600 !important;
+    color: #0e0f12 !important;
+    letter-spacing: -0.01em;
+}
+
+/* ── Form elements ────────────────────────────────────────────────────── */
+
+.pf-v5-c-form__label-text {
+    font-weight: 500 !important;
+    color: #374151 !important;
+    font-size: 0.875rem !important;
+}
+
+.pf-v5-c-form-control {
+    border-radius: 8px !important;
+}
+
+.pf-v5-c-form-control input,
+.pf-v5-c-form-control select {
+    border-radius: 8px !important;
+}
+
+/* ── Primary button ───────────────────────────────────────────────────── */
+
+.pf-v5-c-button.pf-m-primary {
+    background-color: #0d6efd !important;
+    border-color: #0d6efd !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s !important;
+}
+
+.pf-v5-c-button.pf-m-primary:hover,
+.pf-v5-c-button.pf-m-primary:focus {
+    background-color: #0b5ed7 !important;
+    border-color: #0a58ca !important;
+    box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.25) !important;
+}
+
+/* Secondary buttons */
+.pf-v5-c-button.pf-m-secondary {
+    border-radius: 8px !important;
+}
+
+/* Links */
+a {
+    color: #0d6efd;
+}
+
+a:hover {
+    color: #0b5ed7;
+}
+
+/* ── Alert/error messages ─────────────────────────────────────────────── */
+
+.pf-v5-c-alert.pf-m-danger {
+    border-radius: 8px;
+}
+
+/* ── Footer ─────────────────────────────────────────────────────────────── */
+
+#kc-lintune-footer {
+    text-align: center;
+    font-size: 0.75rem;
+    color: #6b7280;
+    margin: 0;
+    padding: 1rem 0 0.5rem;
+}
+
+#kc-lintune-footer a {
+    color: #6b7280;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+#kc-lintune-footer a:hover {
+    color: #0e0f12;
+}
+
+/* ── Responsive ──────────────────────────────────────────────────────── */
+
+@media (max-width: 480px) {
+    .pf-v5-c-login__container {
+        grid-template-columns: 1fr !important;
+    }
+    .pf-v5-c-login {
+        padding: 1rem;
+        align-items: flex-start;
+    }
+}

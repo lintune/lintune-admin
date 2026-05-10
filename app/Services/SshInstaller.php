@@ -151,6 +151,7 @@ YAML;
             "      - \"{$externalPort}:8080\"",
             '    volumes:',
             '      - keycloak_data:/opt/keycloak/data',
+            '      - /opt/keycloak/themes:/opt/keycloak/themes',
             '    restart: unless-stopped',
             '',
             'volumes:',
@@ -158,10 +159,16 @@ YAML;
         ]));
 
         $this->execScript(<<<BASH
-mkdir -p /opt/keycloak
+mkdir -p /opt/keycloak /opt/keycloak/themes
 cat > /opt/keycloak/docker-compose.yml << 'EOLYAML'
 {$composeYaml}
 EOLYAML
+
+# Deploy Lintune KC theme
+echo "  Downloading Lintune Keycloak theme..."
+curl -fsSL https://get.lintune.xyz/keycloak-theme.tar.gz | tar -xz -C /opt/keycloak/themes/
+echo "  Theme deployed."
+
 cd /opt/keycloak
 docker compose up -d
 echo "  Keycloak container started."
