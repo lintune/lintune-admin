@@ -209,10 +209,10 @@ class InstallController extends Controller
 
             try {
                 match ($stage) {
-                    'headscale' => $this->runHeadscaleStage($params, $cb, $emit),
-                    'keycloak'  => $this->runKeycloakStage($params, $type, $kcAdminUsername, $kcAdminPassword, $cb, $emit, $log, $retry),
-                    'mailcow'   => $this->runMailcowStage($params, $type, $cb, $retry),
-                    'nextcloud' => $this->runNextcloudStage($params, $type, $cb, $emit, $log, $retry),
+                    'headscale' => $this->runHeadscaleStage($params, $key, $cb, $emit),
+                    'keycloak'  => $this->runKeycloakStage($params, $key, $type, $kcAdminUsername, $kcAdminPassword, $cb, $emit, $log, $retry),
+                    'mailcow'   => $this->runMailcowStage($params, $key, $type, $cb, $retry),
+                    'nextcloud' => $this->runNextcloudStage($params, $key, $type, $cb, $emit, $log, $retry),
                     default     => throw new \RuntimeException("Unknown stage: {$stage}"),
                 };
             } catch (\Throwable $e) {
@@ -322,7 +322,7 @@ class InstallController extends Controller
 
     // ── Stage runners ─────────────────────────────────────────────────────────
 
-    private function runKeycloakStage(array $params, string $type, string $kcAdminUsername, string $kcAdminPassword, callable $cb, callable $emit, array &$log, bool $retry): void
+    private function runKeycloakStage(array $params, string $key, string $type, string $kcAdminUsername, string $kcAdminPassword, callable $cb, callable $emit, array &$log, bool $retry): void
     {
         if ($type === 'single') {
             $kcHost     = ($params['ssh_host'] ?? '') === '__local__' ? 'host.docker.internal' : ($params['ssh_host'] ?? '');
@@ -370,13 +370,13 @@ class InstallController extends Controller
         $this->setupKeycloak($base, $keycloakUrl, $kcAdminUsername, $kcAdminPassword, $log, $emit);
         $this->initKuma($params, $base, $keycloakUrl, $kcAdminUsername, $kcAdminPassword, $log, $emit);
 
-        $tailscaleIp = $this->maybeJoinHeadscale($params, $ssh, $cb);
+        $tailscaleIp = $this->maybeJoinHeadscale($params, $key, $ssh, $cb);
         $this->maybeSetupBackup($params, $ssh, $cb);
         $this->recordServer($kcHost, 'keycloak', $keycloakUrl, $tailscaleIp);
         (new BackupService())->writeServersJson();
     }
 
-    private function runMailcowStage(array $params, string $type, callable $cb, bool $retry): void
+    private function runMailcowStage(array $params, string $key, string $type, callable $cb, bool $retry): void
     {
         $timezone = $params['timezone'] ?? 'UTC';
 
@@ -403,13 +403,13 @@ class InstallController extends Controller
         $mcHost = $type === 'single'
             ? (($params['ssh_host'] ?? '') === '__local__' ? 'host.docker.internal' : ($params['ssh_host'] ?? ''))
             : ($params['mc_host'] ?? '');
-        $tailscaleIp = $this->maybeJoinHeadscale($params, $ssh, $cb);
+        $tailscaleIp = $this->maybeJoinHeadscale($params, $key, $ssh, $cb);
         $this->maybeSetupBackup($params, $ssh, $cb);
         $this->recordServer($mcHost, 'mailcow', "https://{$params['mailcow_hostname']}", $tailscaleIp);
         (new BackupService())->writeServersJson();
     }
 
-    private function runNextcloudStage(array $params, string $type, callable $cb, callable $emit, array &$log, bool $retry): void
+    private function runNextcloudStage(array $params, string $key, string $type, callable $cb, callable $emit, array &$log, bool $retry): void
     {
         $timezone = $params['timezone'] ?? 'UTC';
         $ncUrl    = rtrim($params['nc_url'], '/');
@@ -511,7 +511,7 @@ class InstallController extends Controller
         $ncHost = $type === 'single'
             ? (($params['ssh_host'] ?? '') === '__local__' ? 'host.docker.internal' : ($params['ssh_host'] ?? ''))
             : ($params['nc_host'] ?? '');
-        $tailscaleIp = $this->maybeJoinHeadscale($params, $ssh, $cb);
+        $tailscaleIp = $this->maybeJoinHeadscale($params, $key, $ssh, $cb);
         $this->maybeSetupBackup($params, $ssh, $cb);
         $this->recordServer($ncHost, 'nextcloud', $ncUrl, $tailscaleIp);
         (new BackupService())->writeServersJson();
@@ -569,7 +569,7 @@ class InstallController extends Controller
         );
     }
 
-    private function runHeadscaleStage(array $params, callable $cb, callable $emit): void
+    private function runHeadscaleStage(array $params, string $key, callable $cb, callable $emit): void
     {
         $emit('log', ['line' => '→ Configuring VPN mesh (Headscale)...']);
 
@@ -600,16 +600,52 @@ class InstallController extends Controller
         $emit('log', ['line' => '  Creating VPN user...']);
         $hs->ensureUser('lintune');
 
-        $emit('log', ['line' => '  VPN mesh ready. Service servers will join automatically during installation.']);
-        $cb('  Headscale configured.');
+        // For single-server installs: join the server now so subsequent service stages
+        // don't need to — they just read the cached IP.
+        $tailscaleIp = null;
+        if (($params['server_type'] ?? 'single') === 'single') {
+            $host = ($params['ssh_host'] ?? '') === '__local__' ? 'host.docker.internal' : ($params['ssh_host'] ?? '');
+            $ssh  = new SshInstaller($host, $params['ssh_user'], $params['ssh_pass']);
+            $ssh->setOutputCallback($cb);
+            $emit('log', ['line' => '  Joining server to VPN mesh...']);
+            try {
+                $preAuthKey  = $hs->createPreAuthKey('lintune');
+                $tailscaleIp = $ssh->joinHeadscaleNetwork($headscaleUrl, $preAuthKey) ?: null;
+                if ($tailscaleIp) {
+                    $cb("  Server joined VPN mesh — Tailscale IP: {$tailscaleIp}");
+                } else {
+                    $cb('  Warning: joined mesh but could not retrieve Tailscale IP.');
+                }
+            } catch (\Throwable $e) {
+                $cb('  Warning: failed to join VPN mesh — ' . $e->getMessage());
+            }
+            // Cache the result (empty string = attempted but failed) so service stages
+            // can skip the join without creating redundant pre-auth keys.
+            Cache::put("install_tailscale_ip:{$key}", $tailscaleIp ?? '', now()->addHours(2));
+        }
+
+        $emit('log', ['line' => '  VPN mesh ready.']);
     }
 
-    private function maybeJoinHeadscale(array $params, SshInstaller $ssh, callable $cb): ?string
+    /**
+     * For single-server installs: the headscale stage already joined the server and cached
+     * the Tailscale IP. Return it directly — no new SSH, no new pre-auth key.
+     *
+     * For multi-server installs: each service stage SSHes to a different server and joins it.
+     */
+    private function maybeJoinHeadscale(array $params, string $key, SshInstaller $ssh, callable $cb): ?string
     {
         if (empty($params['install_headscale'])) {
             return null;
         }
 
+        // Single-server: headscale stage already did the join — use cached IP
+        if (($params['server_type'] ?? 'single') === 'single') {
+            $cached = Cache::get("install_tailscale_ip:{$key}");
+            return $cached ?: null;
+        }
+
+        // Multi-server: join this service's server now
         $headscaleUrl = Setting::get('headscale.url');
         if (!$headscaleUrl) {
             return null;
@@ -617,8 +653,7 @@ class InstallController extends Controller
 
         try {
             $preAuthKey  = (new HeadscaleService())->createPreAuthKey('lintune');
-            $tailscaleIp = $ssh->joinHeadscaleNetwork($headscaleUrl, $preAuthKey);
-
+            $tailscaleIp = $ssh->joinHeadscaleNetwork($headscaleUrl, $preAuthKey) ?: null;
             if ($tailscaleIp) {
                 $cb("  Joined VPN mesh — Tailscale IP: {$tailscaleIp}");
                 return $tailscaleIp;
