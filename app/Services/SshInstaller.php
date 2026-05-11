@@ -196,25 +196,10 @@ echo "  Theme deployed."
 
 cd /opt/keycloak
 
-# Start MariaDB first and wait until it accepts connections before starting Keycloak.
-# Use `if` for the readiness check — `set -e` does not apply to `if` conditions,
-# so a non-zero exit from mysqladmin won't abort the script mid-loop.
-echo "  Starting MariaDB..."
-docker compose up -d mariadb
-DB_READY=0
-for i in \$(seq 1 30); do
-    if docker compose exec -T mariadb mysqladmin ping -h localhost -u keycloak -p{$kcDbPassword} --silent >/dev/null 2>&1; then
-        DB_READY=1
-        break
-    fi
-    echo "  MariaDB not ready yet (attempt \$i/30)..."
-    sleep 5
-done
-[ "\$DB_READY" = "1" ] || { echo "  ERROR: MariaDB did not become ready in time."; exit 1; }
-echo "  MariaDB ready."
-
-docker compose up -d keycloak
-echo "  Keycloak container started."
+# Start all services. Keycloak has built-in DB retry so it handles MariaDB
+# not being immediately ready without any explicit polling on our side.
+docker compose up -d
+echo "  Keycloak and MariaDB containers started."
 
 # Suppress the "temporary admin" warning by re-applying the password via kcadm.sh.
 # Keycloak's bootstrap env-var path always marks the first account as temporary;
