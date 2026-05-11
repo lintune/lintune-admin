@@ -83,10 +83,59 @@ class InstallController extends Controller
             ]));
         }
 
+        // Test SSH connectivity for each unique remote host before committing to install.
+        // Skips __local__ (host.docker.internal — can't test from within the container).
+        $sshError = $this->validateSshCredentials($request, $type);
+        if ($sshError) {
+            return back()->withInput($request->except(['ssh_pass', 'kc_pass', 'mc_pass', 'nc_pass']))
+                         ->withErrors(['ssh' => $sshError]);
+        }
+
         $key = Str::uuid()->toString();
         Cache::put("install_params:{$key}", $request->except('_token'), now()->addHours(2));
 
         return redirect()->route('install.progress', $key);
+    }
+
+    // ── SSH validation ────────────────────────────────────────────────────────
+
+    private function validateSshCredentials(Request $request, string $type): ?string
+    {
+        $tested = [];
+
+        $tryConnect = function (string $label, string $host, string $user, string $pass) use (&$tested): ?string {
+            if ($host === '__local__' || in_array($host, $tested, true)) {
+                return null;
+            }
+            $tested[] = $host;
+            try {
+                new \App\Services\SshInstaller($host, $user, $pass, 22, 10);
+            } catch (\Throwable $e) {
+                return "Cannot connect to {$label} ({$user}@{$host}): {$e->getMessage()}";
+            }
+            return null;
+        };
+
+        if ($type === 'single') {
+            $host = $request->input('ssh_host', '__local__');
+            return $tryConnect('server', $host, $request->input('ssh_user'), $request->input('ssh_pass'));
+        }
+
+        // Multi-server: test each host that was provided
+        if ($err = $tryConnect('Keycloak server', $request->input('kc_host', ''), $request->input('kc_user'), $request->input('kc_pass'))) {
+            return $err;
+        }
+        if ($request->boolean('install_mailcow') && $request->filled('mc_host')) {
+            if ($err = $tryConnect('Mailcow server', $request->input('mc_host'), $request->input('mc_user'), $request->input('mc_pass'))) {
+                return $err;
+            }
+        }
+        if ($request->boolean('install_nextcloud') && $request->filled('nc_host')) {
+            if ($err = $tryConnect('Nextcloud server', $request->input('nc_host'), $request->input('nc_user'), $request->input('nc_pass'))) {
+                return $err;
+            }
+        }
+        return null;
     }
 
     // ── Guided: progress page ─────────────────────────────────────────────────

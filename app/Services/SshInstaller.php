@@ -12,11 +12,15 @@ class SshInstaller
     private \Closure|null $outputCallback = null;
     private array $captured = [];
 
-    public function __construct(string $host, string $user, string $password, int $port = 22)
+    /**
+     * @param int $connectTimeout  Seconds for the TCP + auth handshake. 0 = phpseclib default (10s).
+     *                             Pass a non-zero value for fast pre-install credential checks.
+     */
+    public function __construct(string $host, string $user, string $password, int $port = 22, int $connectTimeout = 0)
     {
         $this->useSudo = ($user !== 'root');
-        $ssh = new SSH2($host, $port);
-        $ssh->setTimeout(0); // no timeout — installs can take many minutes
+        $ssh = $connectTimeout > 0 ? new SSH2($host, $port, $connectTimeout) : new SSH2($host, $port);
+        $ssh->setTimeout(0); // no timeout on exec — installs can take many minutes
         if (!$ssh->login($user, $password)) {
             throw new \RuntimeException("SSH authentication failed for {$user}@{$host}");
         }
@@ -137,15 +141,35 @@ YAML;
             $extraEnv  = '';
         }
 
-        // Build compose YAML as a plain string (no heredoc nesting confusion)
+        // Random hex password safe in YAML and bash without quoting concerns.
+        $kcDbPassword = bin2hex(random_bytes(16));
+
+        // Build compose YAML: MariaDB first, Keycloak depends on it.
         $composeYaml = implode("\n", array_filter([
             'services:',
+            '  mariadb:',
+            '    image: mariadb:10.11',
+            '    environment:',
+            '      MYSQL_DATABASE: keycloak',
+            '      MYSQL_USER: keycloak',
+            "      MYSQL_PASSWORD: {$kcDbPassword}",
+            "      MYSQL_RANDOM_ROOT_PASSWORD: 'yes'",
+            '    volumes:',
+            '      - keycloak_db:/var/lib/mysql',
+            '    restart: unless-stopped',
+            '',
             '  keycloak:',
             '    image: quay.io/keycloak/keycloak:' . env('KEYCLOAK_VERSION', '26.6.1'),
             "    command: {$kcCommand}",
+            '    depends_on:',
+            '      - mariadb',
             '    environment:',
             "      KEYCLOAK_ADMIN: {$adminUsername}",
             "      KEYCLOAK_ADMIN_PASSWORD: {$adminPassword}",
+            '      KC_DB: mariadb',
+            '      KC_DB_URL: jdbc:mariadb://mariadb:3306/keycloak',
+            '      KC_DB_USERNAME: keycloak',
+            "      KC_DB_PASSWORD: {$kcDbPassword}",
             $extraEnv ?: null,
             '    ports:',
             "      - \"{$externalPort}:8080\"",
@@ -155,6 +179,7 @@ YAML;
             '    restart: unless-stopped',
             '',
             'volumes:',
+            '  keycloak_db:',
             '  keycloak_data:',
         ]));
 
@@ -170,15 +195,29 @@ curl -fsSL https://get.lintune.xyz/keycloak-theme.tar.gz | tar -xz -C /opt/keycl
 echo "  Theme deployed."
 
 cd /opt/keycloak
-docker compose up -d
+
+# Start MariaDB first and wait until it accepts connections before starting Keycloak.
+echo "  Starting MariaDB..."
+docker compose up -d mariadb
+DB_READY=0
+for i in \$(seq 1 30); do
+    docker compose exec -T mariadb mysqladmin ping -h localhost -u keycloak -p{$kcDbPassword} --silent >/dev/null 2>&1 \
+        && DB_READY=1 && break
+    echo "  MariaDB not ready yet (attempt \$i/30)..."
+    sleep 5
+done
+[ "\$DB_READY" = "1" ] || { echo "  ERROR: MariaDB did not become ready in time."; exit 1; }
+echo "  MariaDB ready."
+
+docker compose up -d keycloak
 echo "  Keycloak container started."
 
-# Suppress the "temporary admin" warning by re-applying the password via kcadm.sh
-# with --temporary false. Keycloak's bootstrap env-var path always marks the first
-# account as temporary; this clears that flag once the container is ready.
-echo "  Waiting for Keycloak to accept kcadm connections..."
+# Suppress the "temporary admin" warning by re-applying the password via kcadm.sh.
+# Keycloak's bootstrap env-var path always marks the first account as temporary;
+# this clears that flag once the container is ready.
+echo "  Waiting for Keycloak to accept kcadm connections (up to 5 min)..."
 KC_READY=0
-for i in \$(seq 1 24); do
+for i in \$(seq 1 30); do
     docker compose exec -T keycloak /opt/keycloak/bin/kcadm.sh \
         config credentials \
         --server http://localhost:8080 \
@@ -186,7 +225,8 @@ for i in \$(seq 1 24); do
         --user '{$adminUsername}' \
         --password '{$adminPassword}' \
         >/dev/null 2>&1 && KC_READY=1 && break
-    sleep 5
+    echo "  KC not ready yet (attempt \$i/30)..."
+    sleep 10
 done
 if [ "\$KC_READY" = "1" ]; then
     docker compose exec -T keycloak /opt/keycloak/bin/kcadm.sh \
@@ -377,9 +417,9 @@ kill \$START_EVENTS 2>/dev/null; wait \$START_EVENTS 2>/dev/null || true
 echo "  Container start triggered."
 
 # ── Phase 3: Wait for Nextcloud to initialize ────────────────────────────────
-echo "  Waiting for Nextcloud to initialize (may take 5-10 minutes)..."
+echo "  Waiting for Nextcloud to initialize — this typically takes 10–15 minutes, please be patient..."
 NC_READY=0
-for i in \$(seq 1 60); do
+for i in \$(seq 1 90); do
     STATUS=\$(docker inspect --format '{{.State.Status}}' nextcloud-aio-nextcloud 2>/dev/null || echo "missing")
     if [ "\$STATUS" = "running" ]; then
         OCC_OK=\$(docker exec -u www-data nextcloud-aio-nextcloud \\
@@ -390,9 +430,9 @@ for i in \$(seq 1 60); do
             NC_READY=1
             break
         fi
-        echo "  Attempt \$i/60 — Nextcloud initializing..."
+        echo "  Attempt \$i/90 — Nextcloud initializing..."
     else
-        echo "  Attempt \$i/60 — container: \$STATUS..."
+        echo "  Attempt \$i/90 — container: \$STATUS..."
     fi
     sleep 10
 done
@@ -403,12 +443,28 @@ NC_ADMIN_PASS=\$(jq -r '.secrets.NEXTCLOUD_PASSWORD // empty' "\$CONFIG_FILE" 2>
 [ -n "\$NC_ADMIN_PASS" ] && echo "CAPTURE:nc_admin_pass:\$NC_ADMIN_PASS"
 echo "  Admin password captured."
 
+# Give Nextcloud a moment to fully stabilize before running occ commands.
+sleep 15
+
+# Pause the AIO watchtower during account creation to prevent it from
+# restarting containers while occ commands are in flight.
+WATCHTOWER_ID=\$(docker ps -q -f name=nextcloud-aio-watchtower 2>/dev/null || true)
+if [ -n "\$WATCHTOWER_ID" ]; then
+    echo "  Pausing AIO watchtower during account setup..."
+    docker pause "\$WATCHTOWER_ID" >/dev/null 2>&1 || true
+fi
+
 # ── Phase 4: Create lintune service account ──────────────────────────────────
 NC_SVC_PASS=\$(openssl rand -hex 24)
-docker exec -u www-data \\
-    -e OC_PASS="\$NC_SVC_PASS" \\
-    nextcloud-aio-nextcloud \\
-    php occ user:add --password-from-env --display-name="Lintune Service" --group="admin" lintune-svc
+OCC_OK=0
+for attempt in 1 2 3; do
+    docker exec -u www-data -e OC_PASS="\$NC_SVC_PASS" nextcloud-aio-nextcloud \\
+        php occ user:add --password-from-env --display-name="Lintune Service" --group="admin" lintune-svc \\
+        && OCC_OK=1 && break
+    echo "  occ user:add attempt \$attempt failed, retrying in 15s..."
+    sleep 15
+done
+[ "\$OCC_OK" = "1" ] || { echo "  ERROR: Could not create lintune-svc account."; exit 1; }
 echo "CAPTURE:nc_svc_pass:\$NC_SVC_PASS"
 echo "  Service account 'lintune-svc' created."
 
@@ -416,12 +472,24 @@ echo "  Service account 'lintune-svc' created."
 NC_ADMIN_USER=\$(printf '%s' '{$b64AdminUser}' | base64 -d)
 NC_ADMIN_PASS=\$(printf '%s' '{$b64AdminPass}' | base64 -d)
 if [ -n "\$NC_ADMIN_USER" ] && [ -n "\$NC_ADMIN_PASS" ]; then
-    docker exec -u www-data \\
-        -e OC_PASS="\$NC_ADMIN_PASS" \\
-        nextcloud-aio-nextcloud \\
-        php occ user:add --password-from-env --display-name="\$NC_ADMIN_USER" --group="admin" "\$NC_ADMIN_USER"
-    echo "  Operator account '\$NC_ADMIN_USER' created."
+    OCC_OK=0
+    for attempt in 1 2 3; do
+        docker exec -u www-data -e OC_PASS="\$NC_ADMIN_PASS" nextcloud-aio-nextcloud \\
+            php occ user:add --password-from-env --display-name="\$NC_ADMIN_USER" --group="admin" "\$NC_ADMIN_USER" \\
+            && OCC_OK=1 && break
+        echo "  occ user:add attempt \$attempt failed, retrying in 15s..."
+        sleep 15
+    done
+    [ "\$OCC_OK" = "1" ] && echo "  Operator account '\$NC_ADMIN_USER' created." \
+        || echo "  WARNING: Could not create operator account (non-fatal — create it manually)."
 fi
+
+# Resume watchtower if we paused it
+if [ -n "\$WATCHTOWER_ID" ]; then
+    echo "  Resuming AIO watchtower."
+    docker unpause "\$WATCHTOWER_ID" >/dev/null 2>&1 || true
+fi
+
 echo "  Nextcloud AIO setup complete. Domain: {$domain}"
 BASH);
     }

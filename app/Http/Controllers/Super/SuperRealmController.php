@@ -965,6 +965,30 @@ class SuperRealmController extends Controller
 
         $map = DomainRealmMap::where('realm', $realm)->firstOrFail();
 
+        // Before enabling, verify Nextcloud is actually reachable.
+        if ($request->boolean('enabled')) {
+            $ncUrl = rtrim(
+                $request->filled('custom_url') ? $request->custom_url : Setting::get('nextcloud.url', ''),
+                '/'
+            );
+            if ($ncUrl) {
+                try {
+                    $ping = \Http::timeout(8)->get("{$ncUrl}/status.php");
+                    if (!$ping->successful()) {
+                        return back()->withErrors(['realm' =>
+                            "Nextcloud at {$ncUrl} returned HTTP {$ping->status()}. " .
+                            "Ensure it is fully started before enabling for this tenant."
+                        ]);
+                    }
+                } catch (\Throwable $e) {
+                    return back()->withErrors(['realm' =>
+                        "Cannot reach Nextcloud at {$ncUrl}: {$e->getMessage()}. " .
+                        "Ensure it is running and accessible."
+                    ]);
+                }
+            }
+        }
+
         if (!$request->boolean('exists')) {
             [$user, $pass] = $this->nextcloudAuth($realm);
             $base = $this->nextcloudBase($realm);

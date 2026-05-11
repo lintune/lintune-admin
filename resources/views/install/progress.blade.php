@@ -60,6 +60,12 @@
   </div>
 </div>
 
+<div id="ncWarning" class="alert alert-warning d-none mb-3">
+  <i class="bi bi-hourglass-split me-2"></i>
+  <strong>Nextcloud can take 10–15 minutes to initialize.</strong>
+  AIO pulls several Docker images and runs first-time database setup. The terminal will show progress — please keep this window open.
+</div>
+
 <div id="errorBox" class="alert alert-danger d-none mb-3"></div>
 
 @endsection
@@ -75,12 +81,14 @@
   const statusIcon = document.getElementById('statusIcon');
   const statusText = document.getElementById('statusText');
   const errorBox   = document.getElementById('errorBox');
+  const ncWarning  = document.getElementById('ncWarning');
   const actionBox  = document.getElementById('actionBox');
   const retryBtn   = document.getElementById('retryBtn');
   const nextBtn    = document.getElementById('nextBtn');
   const nextBtnLbl = document.getElementById('nextBtnLabel');
 
-  let currentStage = null;
+  let currentStage   = null;
+  let countdownTimer = null;
 
   function appendLine(text) {
     terminal.textContent += text + '\n';
@@ -93,6 +101,10 @@
     if (retry) params.set('retry', '1');
     const qs = params.toString();
     return qs ? streamUrl + '?' + qs : streamUrl;
+  }
+
+  function clearCountdown() {
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
   }
 
   function setCircleStyle(stage, bg, html) {
@@ -122,7 +134,6 @@
   function markDone(stage) {
     setCircleStyle(stage, '#198754', '<i class="bi bi-check-lg"></i>');
     setLabelStyle(stage, '#198754', true);
-    // Mark the connector leading to the next stage green
     const idx = stages.indexOf(stage);
     if (idx >= 0 && idx + 1 < stages.length) {
       setConnectorStyle(stages[idx + 1], '#198754');
@@ -134,18 +145,48 @@
     setLabelStyle(stage, '#dc3545', true);
   }
 
+  // Start a Netflix-style countdown then auto-advance to the next stage.
+  function startCountdown(nextStage, nextLabel, secs) {
+    clearCountdown();
+    let remaining = secs;
+
+    const updateBtn = () => {
+      nextBtnLbl.textContent = 'Continue to ' + nextLabel + ' (' + remaining + 's)';
+    };
+    updateBtn();
+
+    // "Skip countdown" — proceed immediately
+    nextBtn.onclick = function () {
+      clearCountdown();
+      nextBtnLbl.textContent = 'Continue to ' + nextLabel;
+      startStage(nextStage, false);
+    };
+
+    countdownTimer = setInterval(function () {
+      remaining--;
+      if (remaining <= 0) {
+        clearCountdown();
+        startStage(nextStage, false);
+      } else {
+        updateBtn();
+      }
+    }, 1000);
+  }
+
   function startStage(stage, retry) {
+    clearCountdown();
     currentStage = stage;
     retry        = !!retry;
     const label  = stageLabels[stage] || stage;
 
     markActive(stage);
+    ncWarning.classList.toggle('d-none', stage !== 'nextcloud');
 
     if (!retry) {
       terminal.textContent = '';
     }
 
-    document.getElementById('statusIcon').className = 'spinner-border spinner-border-sm text-primary';
+    statusIcon.className = 'spinner-border spinner-border-sm text-primary';
     statusText.textContent = (retry ? 'Retrying ' : 'Installing ') + label + ' — please wait…';
     errorBox.classList.add('d-none');
     actionBox.classList.add('d-none');
@@ -162,9 +203,10 @@
       es.close();
       const data = JSON.parse(e.data);
       markDone(stage);
+      ncWarning.classList.add('d-none');
 
       if (data.redirect) {
-        document.getElementById('statusIcon').className = 'bi bi-check-circle-fill text-success';
+        statusIcon.className = 'bi bi-check-circle-fill text-success';
         statusText.textContent = 'All services installed successfully.';
         nextBtnLbl.textContent = 'View Summary';
         nextBtn.classList.remove('d-none');
@@ -175,19 +217,20 @@
 
       if (data.next_stage) {
         const nextLabel = stageLabels[data.next_stage] || data.next_stage;
-        document.getElementById('statusIcon').className = 'bi bi-check-circle-fill text-success';
-        statusText.textContent = label + ' complete.';
-        nextBtnLbl.textContent = 'Continue to ' + nextLabel;
+        statusIcon.className = 'bi bi-check-circle-fill text-success';
+        statusText.textContent = label + ' complete — starting ' + nextLabel + ' shortly…';
         nextBtn.classList.remove('d-none');
-        nextBtn.onclick = function () { startStage(data.next_stage, false); };
         actionBox.classList.remove('d-none');
+        startCountdown(data.next_stage, nextLabel, 8);
       }
     });
 
     es.addEventListener('error', function (e) {
       es.close();
+      clearCountdown();
       markError(stage);
-      document.getElementById('statusIcon').className = 'bi bi-x-circle-fill text-danger';
+      ncWarning.classList.add('d-none');
+      statusIcon.className = 'bi bi-x-circle-fill text-danger';
       statusText.textContent = label + ' installation failed.';
 
       if (e.data) {
