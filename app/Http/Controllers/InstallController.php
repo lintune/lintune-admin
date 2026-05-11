@@ -169,7 +169,8 @@ class InstallController extends Controller
             abort(404);
         }
 
-        $stage  = $request->query('stage', 'keycloak');
+        $stages = $this->getStages($params);
+        $stage  = $request->query('stage', $stages[0] ?? 'keycloak');
         $retry  = (bool) $request->query('retry', false);
         $stages = $this->getStages($params);
 

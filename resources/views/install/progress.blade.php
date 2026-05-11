@@ -97,10 +97,9 @@
 
   function stageUrl(stage, retry) {
     const params = new URLSearchParams();
-    if (stage !== stages[0]) params.set('stage', stage);
+    params.set('stage', stage);
     if (retry) params.set('retry', '1');
-    const qs = params.toString();
-    return qs ? streamUrl + '?' + qs : streamUrl;
+    return streamUrl + '?' + params.toString();
   }
 
   function clearCountdown() {
