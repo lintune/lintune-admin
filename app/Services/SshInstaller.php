@@ -361,19 +361,22 @@ for i in \$(seq 1 24); do
 done
 [ "\$AIO_UP" = "1" ] || { echo "  ERROR: AIO did not respond after 2 minutes."; exit 1; }
 
-# Read the generated passphrase and hand it to InstallController for encrypted storage
-CONFIG_FILE="/var/lib/docker/volumes/nextcloud_aio_mastercontainer/_data/data/configuration.json"
-PASSPHRASE=\$(jq -r '.password' "\$CONFIG_FILE")
+# Read/write configuration.json via docker exec — works on any Docker setup including
+# Docker Desktop where /var/lib/docker/volumes/ is not accessible from the host filesystem.
+AIO_CFG_PATH="/mnt/docker-aio-config/data/configuration.json"
+
+PASSPHRASE=\$(docker exec nextcloud-aio-mastercontainer cat "\$AIO_CFG_PATH" | jq -r '.password')
 [ -n "\$PASSPHRASE" ] || { echo "  ERROR: Could not read AIO passphrase."; exit 1; }
 echo "CAPTURE:nc_aio_pass:\$PASSPHRASE"
 echo "  Passphrase captured."
 
 # Write domain, timezone, ports, and wasStartButtonClicked into configuration.json.
 # No secrets section — AIO generates those when containers first start.
-jq --arg domain "{$domain}" --arg tz "{$timezone}" \\
-    '. + {"domain": \$domain, "timezone": \$tz, "apache_port": "11000", "apache_ip_binding": "0.0.0.0", "borg_restore_password": "", "wasStartButtonClicked": true} | del(.secrets)' \\
-    "\$CONFIG_FILE" > /tmp/nc_cfg.json && mv /tmp/nc_cfg.json "\$CONFIG_FILE"
-docker exec -u root nextcloud-aio-mastercontainer chown www-data:www-data /mnt/docker-aio-config/data/configuration.json
+CURRENT_CFG=\$(docker exec nextcloud-aio-mastercontainer cat "\$AIO_CFG_PATH")
+NEW_CFG=\$(echo "\$CURRENT_CFG" | jq --arg domain "{$domain}" --arg tz "{$timezone}" \\
+    '. + {"domain": \$domain, "timezone": \$tz, "apache_port": "11000", "apache_ip_binding": "0.0.0.0", "borg_restore_password": "", "wasStartButtonClicked": true} | del(.secrets)')
+echo "\$NEW_CFG" | docker exec -i nextcloud-aio-mastercontainer sh -c "cat > \$AIO_CFG_PATH"
+docker exec -u root nextcloud-aio-mastercontainer chown www-data:www-data "\$AIO_CFG_PATH"
 echo "  Config written: domain={$domain}, timezone={$timezone}."
 
 # ── Phase 1: Pull images ──────────────────────────────────────────────────────
