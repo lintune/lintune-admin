@@ -197,12 +197,16 @@ echo "  Theme deployed."
 cd /opt/keycloak
 
 # Start MariaDB first and wait until it accepts connections before starting Keycloak.
+# Use `if` for the readiness check — `set -e` does not apply to `if` conditions,
+# so a non-zero exit from mysqladmin won't abort the script mid-loop.
 echo "  Starting MariaDB..."
 docker compose up -d mariadb
 DB_READY=0
 for i in \$(seq 1 30); do
-    docker compose exec -T mariadb mysqladmin ping -h localhost -u keycloak -p{$kcDbPassword} --silent >/dev/null 2>&1 \
-        && DB_READY=1 && break
+    if docker compose exec -T mariadb mysqladmin ping -h localhost -u keycloak -p{$kcDbPassword} --silent >/dev/null 2>&1; then
+        DB_READY=1
+        break
+    fi
     echo "  MariaDB not ready yet (attempt \$i/30)..."
     sleep 5
 done
@@ -218,13 +222,16 @@ echo "  Keycloak container started."
 echo "  Waiting for Keycloak to accept kcadm connections (up to 5 min)..."
 KC_READY=0
 for i in \$(seq 1 30); do
-    docker compose exec -T keycloak /opt/keycloak/bin/kcadm.sh \
-        config credentials \
-        --server http://localhost:8080 \
-        --realm master \
-        --user '{$adminUsername}' \
-        --password '{$adminPassword}' \
-        >/dev/null 2>&1 && KC_READY=1 && break
+    if docker compose exec -T keycloak /opt/keycloak/bin/kcadm.sh \
+            config credentials \
+            --server http://localhost:8080 \
+            --realm master \
+            --user '{$adminUsername}' \
+            --password '{$adminPassword}' \
+            >/dev/null 2>&1; then
+        KC_READY=1
+        break
+    fi
     echo "  KC not ready yet (attempt \$i/30)..."
     sleep 10
 done
