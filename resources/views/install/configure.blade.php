@@ -91,6 +91,39 @@
     </div>
   </div>
 
+  {{-- ── VPN Mesh section ──────────────────────────────────────────────── --}}
+  <div class="card shadow-sm mb-4">
+    <div class="card-header d-flex align-items-center">
+      <h5 class="card-title mb-0 me-auto">
+        <i class="bi bi-diagram-3 me-2 text-primary"></i>VPN Mesh
+        <small class="text-muted fw-normal ms-2">— Headscale / Tailscale (optional)</small>
+      </h5>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" role="switch"
+               id="hs_enabled" name="install_headscale" value="1"
+               {{ old('install_headscale') ? 'checked' : '' }}
+               onchange="document.getElementById('hsBody').classList.toggle('d-none', !this.checked)">
+        <label class="form-check-label" for="hs_enabled">Enable</label>
+      </div>
+    </div>
+    <div id="hsBody" class="{{ old('install_headscale') ? '' : 'd-none' }} card-body">
+      <p class="text-muted small mb-0">
+        Headscale is already running as part of the Lintune stack. Enabling this wires all installed
+        service servers into a shared WireGuard mesh — ideal for multi-server setups, on-prem servers,
+        and secure inter-service communication. Each service server will have Tailscale installed and
+        will automatically join the mesh during its installation stage.
+      </p>
+      @if($baseDomain)
+      <div class="mt-2 text-muted small">
+        <i class="bi bi-info-circle me-1"></i>
+        Headscale coordination server: <code>vpn.{{ $baseDomain }}</code>
+        — must be publicly reachable before service servers can join.
+        STUN (UDP 3478) must also be open for direct WireGuard connections.
+      </div>
+      @endif
+    </div>
+  </div>
+
   {{-- ── Keycloak section ────────────────────────────────────────────────── --}}
   <div class="card shadow-sm mb-4">
     <div class="card-header bg-primary-subtle">

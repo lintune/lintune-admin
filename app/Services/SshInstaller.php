@@ -577,6 +577,35 @@ echo "  Backup user ready."
 BASH);
     }
 
+    public function joinHeadscaleNetwork(string $headscaleUrl, string $preAuthKey): string
+    {
+        $this->emit('→ Joining VPN mesh...');
+        $b64Url = base64_encode($headscaleUrl);
+        $b64Key = base64_encode($preAuthKey);
+
+        $this->execScript(<<<BASH
+HS_URL=\$(printf '%s' '{$b64Url}' | base64 -d)
+HS_KEY=\$(printf '%s' '{$b64Key}' | base64 -d)
+
+if ! command -v tailscale >/dev/null 2>&1; then
+    echo "  Installing Tailscale..."
+    curl -fsSL https://tailscale.com/install.sh | sh
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now tailscaled 2>/dev/null || true
+fi
+
+tailscale up --login-server="\$HS_URL" --authkey="\$HS_KEY" --accept-routes --accept-dns=false --reset
+
+TAILSCALE_IP=\$(tailscale ip -4 2>/dev/null | head -1)
+echo "  Tailscale IP: \$TAILSCALE_IP"
+echo "CAPTURE:tailscale_ip:\$TAILSCALE_IP"
+BASH);
+
+        return $this->getCaptured('tailscale_ip') ?? '';
+    }
+
     public function postConfigureMailcow(string $adminUsername, string $adminPassword): void
     {
         $this->emit('→ Configuring Mailcow admin account...');

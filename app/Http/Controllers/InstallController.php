@@ -6,6 +6,7 @@ use App\Models\Server;
 use App\Models\ServerService;
 use App\Models\Setting;
 use App\Services\BackupService;
+use App\Services\HeadscaleService;
 use App\Services\SshInstaller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -207,6 +208,7 @@ class InstallController extends Controller
 
             try {
                 match ($stage) {
+                    'headscale' => $this->runHeadscaleStage($params, $cb, $emit),
                     'keycloak'  => $this->runKeycloakStage($params, $type, $kcAdminUsername, $kcAdminPassword, $cb, $emit, $log, $retry),
                     'mailcow'   => $this->runMailcowStage($params, $type, $cb, $retry),
                     'nextcloud' => $this->runNextcloudStage($params, $type, $cb, $emit, $log, $retry),
@@ -367,8 +369,9 @@ class InstallController extends Controller
         $this->setupKeycloak($base, $keycloakUrl, $kcAdminUsername, $kcAdminPassword, $log, $emit);
         $this->initKuma($params, $base, $keycloakUrl, $kcAdminUsername, $kcAdminPassword, $log, $emit);
 
+        $tailscaleIp = $this->maybeJoinHeadscale($params, $ssh, $cb);
         $this->maybeSetupBackup($params, $ssh, $cb);
-        $this->recordServer($kcHost, 'keycloak', $keycloakUrl);
+        $this->recordServer($kcHost, 'keycloak', $keycloakUrl, $tailscaleIp);
         (new BackupService())->writeServersJson();
     }
 
@@ -399,8 +402,9 @@ class InstallController extends Controller
         $mcHost = $type === 'single'
             ? (($params['ssh_host'] ?? '') === '__local__' ? 'host.docker.internal' : ($params['ssh_host'] ?? ''))
             : ($params['mc_host'] ?? '');
+        $tailscaleIp = $this->maybeJoinHeadscale($params, $ssh, $cb);
         $this->maybeSetupBackup($params, $ssh, $cb);
-        $this->recordServer($mcHost, 'mailcow', "https://{$params['mailcow_hostname']}");
+        $this->recordServer($mcHost, 'mailcow', "https://{$params['mailcow_hostname']}", $tailscaleIp);
         (new BackupService())->writeServersJson();
     }
 
@@ -506,8 +510,9 @@ class InstallController extends Controller
         $ncHost = $type === 'single'
             ? (($params['ssh_host'] ?? '') === '__local__' ? 'host.docker.internal' : ($params['ssh_host'] ?? ''))
             : ($params['nc_host'] ?? '');
+        $tailscaleIp = $this->maybeJoinHeadscale($params, $ssh, $cb);
         $this->maybeSetupBackup($params, $ssh, $cb);
-        $this->recordServer($ncHost, 'nextcloud', $ncUrl);
+        $this->recordServer($ncHost, 'nextcloud', $ncUrl, $tailscaleIp);
         (new BackupService())->writeServersJson();
     }
 
@@ -543,12 +548,17 @@ class InstallController extends Controller
         }
     }
 
-    private function recordServer(string $host, string $service, string $serviceUrl): void
+    private function recordServer(string $host, string $service, string $serviceUrl, ?string $internalHost = null): void
     {
         $server = Server::firstOrCreate(
             ['host' => $host, 'ssh_user' => 'lintune-backup'],
-            ['label' => $host, 'internal_host' => $host, 'ssh_port' => 22]
+            ['label' => $host, 'internal_host' => $internalHost ?? $host, 'ssh_port' => 22]
         );
+
+        // Update internal_host to the Tailscale IP if we have one and it's still the default
+        if ($internalHost && $server->internal_host === $server->host) {
+            $server->update(['internal_host' => $internalHost]);
+        }
 
         $isFirst = !ServerService::where('service', $service)->exists();
 
@@ -556,6 +566,67 @@ class InstallController extends Controller
             ['server_id' => $server->id, 'service' => $service],
             ['service_url' => $serviceUrl, 'is_default' => $isFirst]
         );
+    }
+
+    private function runHeadscaleStage(array $params, callable $cb, callable $emit): void
+    {
+        $emit('log', ['line' => '→ Configuring VPN mesh (Headscale)...']);
+
+        // API key written to .env by install.sh after container start — read file directly
+        // because Laravel's immutable Dotenv won't see values added after container boot.
+        $envContent = file_get_contents(base_path('.env'));
+        preg_match('/^HEADSCALE_API_KEY=(.+)$/m', $envContent, $keyMatch);
+        preg_match('/^HEADSCALE_URL=(.+)$/m', $envContent, $urlMatch);
+
+        $apiKey       = trim($keyMatch[1] ?? '');
+        $headscaleUrl = trim($urlMatch[1] ?? '');
+
+        if (!$apiKey) {
+            throw new \RuntimeException('Headscale API key not found in .env. Run install.sh again or check that Headscale started correctly.');
+        }
+
+        Setting::set('headscale.api_key', $apiKey, true);
+        Setting::set('headscale.url', $headscaleUrl);
+        Setting::set('headscale.internal_url', 'http://headscale:8080');
+        Setting::set('headscale.enabled', '1');
+
+        $hs = new HeadscaleService();
+
+        if (!$hs->isReachable()) {
+            throw new \RuntimeException('Cannot reach Headscale at http://headscale:8080. Is the container running?');
+        }
+
+        $emit('log', ['line' => '  Creating VPN user...']);
+        $hs->ensureUser('lintune');
+
+        $emit('log', ['line' => '  VPN mesh ready. Service servers will join automatically during installation.']);
+        $cb('  Headscale configured.');
+    }
+
+    private function maybeJoinHeadscale(array $params, SshInstaller $ssh, callable $cb): ?string
+    {
+        if (empty($params['install_headscale'])) {
+            return null;
+        }
+
+        $headscaleUrl = Setting::get('headscale.url');
+        if (!$headscaleUrl) {
+            return null;
+        }
+
+        try {
+            $preAuthKey  = (new HeadscaleService())->createPreAuthKey('lintune');
+            $tailscaleIp = $ssh->joinHeadscaleNetwork($headscaleUrl, $preAuthKey);
+
+            if ($tailscaleIp) {
+                $cb("  Joined VPN mesh — Tailscale IP: {$tailscaleIp}");
+                return $tailscaleIp;
+            }
+        } catch (\Throwable $e) {
+            $cb('  Warning: failed to join VPN mesh — ' . $e->getMessage());
+        }
+
+        return null;
     }
 
     private function maybeSetupBackup(array $params, SshInstaller $ssh, callable $cb): void
@@ -604,7 +675,13 @@ class InstallController extends Controller
     private function getStages(array $params): array
     {
         $type   = $params['server_type'] ?? 'single';
-        $stages = ['keycloak'];
+        $stages = [];
+
+        if (!empty($params['install_headscale'])) {
+            $stages[] = 'headscale';
+        }
+
+        $stages[] = 'keycloak';
 
         if ($type === 'single') {
             if (!empty($params['install_mailcow']) && !empty($params['mailcow_hostname'])) {
@@ -627,7 +704,12 @@ class InstallController extends Controller
 
     private function stageLabels(): array
     {
-        return ['keycloak' => 'Keycloak', 'mailcow' => 'Mailcow', 'nextcloud' => 'Nextcloud'];
+        return [
+            'headscale' => 'VPN Mesh',
+            'keycloak'  => 'Keycloak',
+            'mailcow'   => 'Mailcow',
+            'nextcloud' => 'Nextcloud',
+        ];
     }
 
     private function setupKeycloak(string $internalBase, string $publicBase, string $adminUsername, string $adminPassword, array &$log, callable $emit): void
