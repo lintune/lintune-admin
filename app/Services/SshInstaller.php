@@ -587,6 +587,17 @@ BASH);
 HS_URL=\$(printf '%s' '{$b64Url}' | base64 -d)
 HS_KEY=\$(printf '%s' '{$b64Key}' | base64 -d)
 
+# If tailscale is already running and connected, skip install and re-join
+if command -v tailscale >/dev/null 2>&1; then
+    BACKEND=\$(tailscale status --json 2>/dev/null | grep -o '"BackendState":"[^"]*"' | cut -d'"' -f4)
+    if [ "\$BACKEND" = "Running" ]; then
+        TAILSCALE_IP=\$(tailscale ip -4 2>/dev/null | head -1)
+        echo "  Already connected to VPN mesh. Tailscale IP: \$TAILSCALE_IP"
+        echo "CAPTURE:tailscale_ip:\$TAILSCALE_IP"
+        exit 0
+    fi
+fi
+
 if ! command -v tailscale >/dev/null 2>&1; then
     echo "  Installing Tailscale..."
     curl -fsSL https://tailscale.com/install.sh | sh

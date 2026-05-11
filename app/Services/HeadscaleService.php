@@ -39,26 +39,31 @@ class HeadscaleService
         }
     }
 
-    public function ensureUser(string $name): void
+    public function ensureUser(string $name): int
     {
         $res   = $this->http()->get("{$this->baseUrl}/api/v1/user");
         $users = $res->json('users') ?? [];
 
-        $exists = collect($users)->contains(fn($u) => ($u['name'] ?? '') === $name);
-        if ($exists) {
-            return;
+        $existing = collect($users)->firstWhere('name', $name);
+        if ($existing) {
+            return (int) $existing['id'];
         }
 
         $res = $this->http()->post("{$this->baseUrl}/api/v1/user", ['name' => $name]);
         if ($res->failed()) {
             throw new \RuntimeException("Failed to create Headscale user '{$name}': " . $res->body());
         }
+
+        return (int) ($res->json('user.id') ?? 0);
     }
 
-    public function createPreAuthKey(string $user, bool $ephemeral = true): string
+    public function createPreAuthKey(string $userName, bool $ephemeral = true): string
     {
+        // v0.23+ API expects numeric user ID, not the name string
+        $userId = $this->ensureUser($userName);
+
         $res = $this->http()->post("{$this->baseUrl}/api/v1/preauthkey", [
-            'user'       => $user,
+            'user'       => $userId,
             'reusable'   => false,
             'ephemeral'  => $ephemeral,
             'expiration' => now()->addHours(2)->toRfc3339String(),
