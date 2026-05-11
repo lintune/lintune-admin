@@ -2,7 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Server;
+use App\Models\ServerService;
 use App\Models\Setting;
+use App\Services\BackupService;
 use App\Services\SshInstaller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -363,6 +366,10 @@ class InstallController extends Controller
 
         $this->setupKeycloak($base, $keycloakUrl, $kcAdminUsername, $kcAdminPassword, $log, $emit);
         $this->initKuma($params, $base, $keycloakUrl, $kcAdminUsername, $kcAdminPassword, $log, $emit);
+
+        $this->maybeSetupBackup($params, $ssh, $cb);
+        $this->recordServer($kcHost, 'keycloak', $keycloakUrl);
+        (new BackupService())->writeServersJson();
     }
 
     private function runMailcowStage(array $params, string $type, callable $cb, bool $retry): void
@@ -388,6 +395,13 @@ class InstallController extends Controller
         }
 
         $this->addKumaMonitor('Mailcow', "https://{$params['mailcow_hostname']}");
+
+        $mcHost = $type === 'single'
+            ? (($params['ssh_host'] ?? '') === '__local__' ? 'host.docker.internal' : ($params['ssh_host'] ?? ''))
+            : ($params['mc_host'] ?? '');
+        $this->maybeSetupBackup($params, $ssh, $cb);
+        $this->recordServer($mcHost, 'mailcow', "https://{$params['mailcow_hostname']}");
+        (new BackupService())->writeServersJson();
     }
 
     private function runNextcloudStage(array $params, string $type, callable $cb, callable $emit, array &$log, bool $retry): void
@@ -488,6 +502,13 @@ class InstallController extends Controller
 
         $this->addKumaMonitor('Nextcloud', $ncUrl);
         $this->addKumaMonitor('Nextcloud AIO', "https://{$ncDomain}:8080", ignoreTls: true);
+
+        $ncHost = $type === 'single'
+            ? (($params['ssh_host'] ?? '') === '__local__' ? 'host.docker.internal' : ($params['ssh_host'] ?? ''))
+            : ($params['nc_host'] ?? '');
+        $this->maybeSetupBackup($params, $ssh, $cb);
+        $this->recordServer($ncHost, 'nextcloud', $ncUrl);
+        (new BackupService())->writeServersJson();
     }
 
     private function initKuma(array $params, string $kcInternalBase, string $keycloakUrl, string $kcAdminUsername, string $kcAdminPassword, array &$log, callable $emit): void
@@ -519,6 +540,37 @@ class InstallController extends Controller
         } catch (\Throwable $e) {
             $emit('log', ['line' => '  Warning: Kuma setup failed (non-fatal): ' . $e->getMessage()]);
             $log[] = '  Warning: Kuma setup failed: ' . $e->getMessage();
+        }
+    }
+
+    private function recordServer(string $host, string $service, string $serviceUrl): void
+    {
+        $server = Server::firstOrCreate(
+            ['host' => $host, 'ssh_user' => 'lintune-backup'],
+            ['label' => $host, 'internal_host' => $host, 'ssh_port' => 22]
+        );
+
+        $isFirst = !ServerService::where('service', $service)->exists();
+
+        ServerService::updateOrCreate(
+            ['server_id' => $server->id, 'service' => $service],
+            ['service_url' => $serviceUrl, 'is_default' => $isFirst]
+        );
+    }
+
+    private function maybeSetupBackup(array $params, SshInstaller $ssh, callable $cb): void
+    {
+        if (empty($params['install_backup'])) {
+            return;
+        }
+
+        $backup    = new BackupService();
+        $publicKey = $backup->getPublicKey() ?: $backup->generateKeyPair();
+
+        try {
+            $ssh->setupBackupUser($publicKey);
+        } catch (\Throwable $e) {
+            $cb('  Warning: backup user setup failed — ' . $e->getMessage());
         }
     }
 

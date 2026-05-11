@@ -521,6 +521,32 @@ echo "  OpenID Connect configured."
 BASH);
     }
 
+    public function setupBackupUser(string $publicKey): void
+    {
+        $this->emit('→ Setting up backup user...');
+        $b64Key = base64_encode($publicKey);
+        $this->execScript(<<<BASH
+PUB_KEY="\$(printf '%s' '{$b64Key}' | base64 -d)"
+
+if ! id lintune-backup >/dev/null 2>&1; then
+    useradd -r -m -s /bin/bash -d /home/lintune-backup lintune-backup
+fi
+
+usermod -aG docker lintune-backup
+
+mkdir -p /home/lintune-backup/.ssh
+chmod 700 /home/lintune-backup/.ssh
+
+if ! grep -qF "\$PUB_KEY" /home/lintune-backup/.ssh/authorized_keys 2>/dev/null; then
+    echo "\$PUB_KEY" >> /home/lintune-backup/.ssh/authorized_keys
+fi
+
+chmod 600 /home/lintune-backup/.ssh/authorized_keys
+chown -R lintune-backup:lintune-backup /home/lintune-backup/.ssh
+echo "  Backup user ready."
+BASH);
+    }
+
     public function postConfigureMailcow(string $adminUsername, string $adminPassword): void
     {
         $this->emit('→ Configuring Mailcow admin account...');

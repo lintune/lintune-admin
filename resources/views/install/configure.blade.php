@@ -308,6 +308,29 @@
     </div>
   </div>
 
+  {{-- ── Backup section ──────────────────────────────────────────────────── --}}
+  <div class="card shadow-sm mb-4">
+    <div class="card-header d-flex align-items-center">
+      <h5 class="card-title mb-0 me-auto">
+        <i class="bi bi-cloud-arrow-up me-2 text-primary"></i>Backup
+        <small class="text-muted fw-normal ms-2">— automated backups (optional)</small>
+      </h5>
+      <div class="form-check form-switch mb-0">
+        <input class="form-check-input" type="checkbox" role="switch"
+               id="backup_enabled" name="install_backup" value="1"
+               {{ old('install_backup') ? 'checked' : '' }}
+               onchange="document.getElementById('backupBody').classList.toggle('d-none', !this.checked)">
+        <label class="form-check-label" for="backup_enabled">Enable</label>
+      </div>
+    </div>
+    <div id="backupBody" class="{{ old('install_backup') ? '' : 'd-none' }} card-body">
+      <p class="text-muted small mb-0">
+        An SSH keypair will be generated and a <code>lintune-backup</code> system user will be created on each service server.
+        Backups run daily at 02:00 by default — adjustable in Settings → Backup after setup.
+      </p>
+    </div>
+  </div>
+
   <div class="d-flex justify-content-end mb-5">
     <button type="submit" class="btn btn-primary btn-lg">
       <i class="bi bi-play-fill me-1"></i>Start Installation
