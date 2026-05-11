@@ -525,6 +525,26 @@ BASH);
     {
         $this->emit('→ Setting up backup user...');
         $b64Key = base64_encode($publicKey);
+
+        // PHP nowdoc (no interpolation) → safe to include $, $() without escaping
+        $wrapperScript = <<<'WRAPPER'
+#!/bin/bash
+set -euo pipefail
+MAILCOW_DIR=/opt/mailcow-dockerized
+if [[ ! -d "$MAILCOW_DIR" ]]; then
+    echo "mailcow directory not found" >&2
+    exit 1
+fi
+MCTMP=$(mktemp -d)
+chmod 777 "$MCTMP"
+trap "rm -rf $MCTMP" EXIT
+cd "$MAILCOW_DIR"
+MAILCOW_BACKUP_LOCATION="$MCTMP" bash helper-scripts/backup_and_restore.sh backup all > /dev/null
+tar czf - -C "$MCTMP" .
+WRAPPER;
+
+        $b64Wrapper = base64_encode($wrapperScript);
+
         $this->execScript(<<<BASH
 PUB_KEY="\$(printf '%s' '{$b64Key}' | base64 -d)"
 
@@ -543,6 +563,13 @@ fi
 
 chmod 600 /home/lintune-backup/.ssh/authorized_keys
 chown -R lintune-backup:lintune-backup /home/lintune-backup/.ssh
+
+printf '%s' '{$b64Wrapper}' | base64 -d > /usr/local/sbin/lintune-mailcow-backup.sh
+chmod 700 /usr/local/sbin/lintune-mailcow-backup.sh
+
+printf 'Defaults:lintune-backup !requiretty, !use_pty\nlintune-backup ALL=(root) NOPASSWD: /usr/local/sbin/lintune-mailcow-backup.sh\n' > /etc/sudoers.d/lintune-backup
+chmod 440 /etc/sudoers.d/lintune-backup
+
 echo "  Backup user ready."
 BASH);
     }
