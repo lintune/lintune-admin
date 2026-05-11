@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\InstallController;
+use App\Http\Controllers\Super\BackupController;
 use App\Http\Controllers\Super\SettingsController;
 use App\Http\Controllers\Super\StatusController;
 use App\Http\Controllers\Super\AuditLogController;
@@ -75,6 +76,9 @@ Route::prefix('super')->name('super.')->middleware(SetupComplete::class)->group(
             Route::get('/audit-logs', [AuditLogController::class, 'index'])->name('audit-logs');
             Route::get('/settings', [SettingsController::class, 'show'])->name('settings');
             Route::put('/settings', [SettingsController::class, 'update'])->name('settings.update');
+            Route::get('/backup', [BackupController::class, 'index'])->name('backup');
+            Route::put('/backup', [BackupController::class, 'update'])->name('backup.update');
+            Route::post('/backup/trigger', [BackupController::class, 'trigger'])->name('backup.trigger');
         });
     });
 });

@@ -209,6 +209,43 @@ Nextcloud access is gated by membership in a `nextcloud` group in the user's ten
 - `SetupComplete` — blocks `/super/setup` when setup is done; redirects all other `/super/*` routes to `/install` when setup is not done.
 - `WizardComplete` — checks `Setting::get('wizard.complete')`; redirects to wizard if false. Applied to realm management, settings, and audit log routes.
 
+## Planned: Platform SMTP + "Use master realm domain" toggle
+
+**Platform SMTP** — how Lintune sends system emails (welcome emails, notifications, alerts). Independent from Mailcow (tenant email). Stored encrypted in `settings`. Applied at runtime via `Config::set('mail.mailers.smtp.*')` before sending — no config cache flush needed, same pattern as per-realm service URL overrides.
+
+"Use Mailcow" shortcut pre-fills SMTP fields from stored Mailcow credentials. Never auto-configured — always requires explicit intent.
+
+**"Use master realm domain" toggle** — when on, Lintune fully manages the MSP's own email identity:
+- SMTP pre-filled from Mailcow
+- MSP's company domain (master realm domain) used as from address
+- SPF, MX, DKIM, DMARC records listed for manual setup (exact values shown in UI)
+- When Cloudflare integration lands: same toggle triggers automatic DNS record creation — no redesign, Cloudflare just removes the manual step
+- Toggle off = MSP configures SMTP manually, no assumptions made
+
+The MSP's company is the master realm — Lintune already knows their domain. The toggle says "treat my domain as a first-class platform identity and manage it for me." Cloudflare integration knows exactly which zone to touch because the domain is already registered.
+
+**Open question:** does the MSP's domain live in Mailcow as a real domain (with mailboxes), or only in Keycloak? If Exchange/Google Workspace, the toggle wouldn't apply and SMTP is manual regardless.
+
+## Planned: Realm migration (moving a realm to a different MC or NC instance)
+
+Realm = tenant. All users in a realm share one MC and one NC instance (`realms.mailcow_service_id` / `realms.nextcloud_service_id`). Moving a realm means migrating its data to a different instance, then updating the FK.
+
+**Mailcow migration:**
+1. Create domain + users on destination MC via API
+2. Run **imapsync** (IMAP-to-IMAP) to copy emails incrementally while source is still live — users keep receiving mail normally
+3. When sync is nearly caught up: final imapsync pass, flip MX records, update `realms.mailcow_service_id`
+4. The MX TTL window means some mail arrives at the old server post-flip — one extra imapsync pass after the flip handles it
+
+**Nextcloud migration:**
+1. Enable maintenance mode on source NC (`occ maintenance:mode --on`)
+2. rsync the data directory to destination NC
+3. Disable maintenance mode, update `realms.nextcloud_service_id`
+4. Users don't need migrating — they're in Keycloak; OIDC wires them up automatically on first login to the new instance
+
+NC is significantly easier than MC: no MX records, no password migration, Keycloak-as-identity means accounts are KC-native not NC-native.
+
+**Scope:** Not automated in v1. Manual runbook with Lintune updating the `realms` FK at the end. The data model already supports it.
+
 ## What NOT to do
 - Do not create migrations in lintune-dash.
 - Do not build cross-realm queries in lintune-dash.

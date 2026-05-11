@@ -114,10 +114,13 @@ Then open the admin URL in your browser and follow the wizard.
 - [ ] **Nextcloud full provisioning** — AIO install working; deep per-realm provisioning (user accounts, quota) still basic
 
 ### Planned
+- [ ] **Platform SMTP settings** — dedicated settings block (host, port, encryption, username, password, from address) for Lintune system emails (welcome emails, notifications, alerts). Stored encrypted. Wired into Laravel's mailer at runtime via `Config::set()` so no cache flush needed. "Use Mailcow" shortcut pre-fills from stored Mailcow credentials for MSPs happy to use it for platform email too
+- [ ] **"Use master realm domain" toggle** — MSP's own company domain (from the master realm) used as the platform sender identity. When enabled, Lintune sets everything up: SMTP pre-filled from Mailcow, SPF/MX/DKIM/DMARC records shown for manual setup (or set automatically once Cloudflare integration lands). Toggle off = manual SMTP config, no assumptions. Forward-compatible: same toggle gains DNS automation when Cloudflare is connected, no redesign needed
 - [ ] **Welcome email on realm creation** — send a welcome email to the initial admin user when a realm is provisioned. Sender configurable in platform settings, falling back to the logged-in super admin's email
 - [ ] **DNS integration** — auto-create DNS zones per tenant domain and seed MX, SPF, DKIM, and DMARC records on realm creation. Supports PowerDNS (self-hosted) and Cloudflare (managed DNS)
 - [ ] **Workstation login** — expose a read-only, realm-scoped Keycloak LDAP endpoint per tenant so Linux (SSSD) and Windows (Kerberos) workstations can authenticate without Active Directory
 - [ ] **Add-service wizard** — provision an additional Mailcow or Nextcloud instance on a new server and register it in platform settings, ready to be assigned to new realms
+- [ ] **Realm migration** — move a tenant realm from one Mailcow or Nextcloud instance to another. Mailcow: recreate domain/users via API + imapsync for email, then flip MX. Nextcloud: maintenance mode → rsync data dir → update assignment (users re-wire via Keycloak OIDC automatically). Data model already supports this via `realms.mailcow_service_id` / `realms.nextcloud_service_id` FKs
 - [ ] **ISPConfig integration** — per-tenant web hosting account via ISPConfig API. Creates client, website, and FTP account per realm. Tenants never access ISPConfig directly
 - [ ] **Vaultwarden integration** — per-tenant Vaultwarden organisation on realm creation for shared password management
 - [ ] **Headscale integration** — per-tenant managed VPN mesh for secure remote workstation access without opening firewall ports

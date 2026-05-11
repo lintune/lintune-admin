@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Super;
 
+use App\Http\Controllers\Controller;
 use App\Services\KumaService;
 use Illuminate\Support\Facades\Cache;
 

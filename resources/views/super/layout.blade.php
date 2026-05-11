@@ -75,6 +75,12 @@
             </a>
           </li>
           <li class="nav-item">
+            <a href="{{ route('super.backup') }}" class="nav-link {{ request()->routeIs('super.backup*') ? 'active' : '' }}">
+              <i class="nav-icon bi bi-cloud-arrow-up"></i>
+              <p>Backup</p>
+            </a>
+          </li>
+          <li class="nav-item">
             <a href="{{ route('super.settings') }}" class="nav-link {{ request()->routeIs('super.settings') ? 'active' : '' }}">
               <i class="nav-icon bi bi-gear"></i>
               <p>Settings</p>
