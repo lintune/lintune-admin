@@ -8,6 +8,7 @@ use App\Http\Controllers\Super\AuditLogController;
 use App\Http\Controllers\Super\SetupController;
 use App\Http\Controllers\Super\SuperAuthController;
 use App\Http\Controllers\Super\SuperRealmController;
+use App\Http\Controllers\Super\VaultwardenController;
 use App\Http\Controllers\Super\WizardController;
 use App\Http\Middleware\RequireSuperAuth;
 use App\Http\Middleware\SetupComplete;
@@ -74,6 +75,8 @@ Route::prefix('super')->name('super.')->middleware(SetupComplete::class)->group(
             Route::get('/status', [StatusController::class, 'index'])->name('status');
             Route::get('/services', [StatusController::class, 'show'])->name('services');
             Route::get('/audit-logs', [AuditLogController::class, 'index'])->name('audit-logs');
+            Route::get('/vaultwarden', [VaultwardenController::class, 'show'])->name('vaultwarden');
+            Route::post('/vaultwarden/wire', [VaultwardenController::class, 'wireSso'])->name('vaultwarden.wire');
             Route::get('/settings', [SettingsController::class, 'show'])->name('settings');
             Route::put('/settings', [SettingsController::class, 'update'])->name('settings.update');
             Route::get('/backup', [BackupController::class, 'index'])->name('backup');

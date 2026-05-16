@@ -81,6 +81,12 @@
             </a>
           </li>
           <li class="nav-item">
+            <a href="{{ route('super.vaultwarden') }}" class="nav-link {{ request()->routeIs('super.vaultwarden*') ? 'active' : '' }}">
+              <i class="nav-icon bi bi-shield-lock"></i>
+              <p>Vaultwarden</p>
+            </a>
+          </li>
+          <li class="nav-item">
             <a href="{{ route('super.settings') }}" class="nav-link {{ request()->routeIs('super.settings') ? 'active' : '' }}">
               <i class="nav-icon bi bi-gear"></i>
               <p>Settings</p>

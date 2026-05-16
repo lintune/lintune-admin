@@ -237,6 +237,12 @@ class SuperRealmController extends Controller
             $this->setupBrokerFederation($base, $token, $realm, $brokerRealm);
         }
 
+        if (Setting::get('vaultwarden.sso_wired') === '1') {
+            try {
+                (new \App\Services\VaultwardenService())->addDomainToWhitelist($realm);
+            } catch (\Throwable) {}
+        }
+
         AuditLogger::log('realm.created', $realm);
         return redirect()->route('super.realms')->with('success', "Realm '{$realm}' created successfully.");
     }
@@ -1228,6 +1234,13 @@ class SuperRealmController extends Controller
         }
 
         DomainRealmMap::where('realm', $realm)->delete();
+
+        if (Setting::get('vaultwarden.sso_wired') === '1') {
+            try {
+                (new \App\Services\VaultwardenService())->removeDomainFromWhitelist($realm);
+            } catch (\Throwable) {}
+        }
+
         AuditLogger::log('realm.deleted', $realm, $request->boolean('delete_mailcow') ? 'Mailcow domain also deleted' : null);
 
         if ($request->boolean('delete_mailcow') && Setting::get('mailcow.url', config('mailcow.url')) && Setting::get('mailcow.api_key', config('mailcow.api_key'))) {
