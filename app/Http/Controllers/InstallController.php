@@ -583,7 +583,25 @@ class InstallController extends Controller
         $headscaleUrl = trim($urlMatch[1] ?? '');
 
         if (!$apiKey) {
-            throw new \RuntimeException('Headscale API key not found in .env. Run install.sh again or check that Headscale started correctly.');
+            $emit('log', ['line' => '  HEADSCALE_API_KEY missing from .env — generating now...']);
+            $hsUrl = 'https://vpn.' . env('BASE_DOMAIN', '');
+            try {
+                $sshHost = 'host.docker.internal';
+                $ssh     = new SshInstaller($sshHost, $params['ssh_user'] ?? 'root', $params['ssh_pass'] ?? '');
+                $ssh->setOutputCallback($cb);
+                $apiKey = $ssh->generateHeadscaleApiKey($hsUrl);
+                if ($apiKey) {
+                    // Re-read the file so $headscaleUrl is also populated for the join step below
+                    $envContent   = file_get_contents(base_path('.env'));
+                    preg_match('/^HEADSCALE_URL=(.+)$/m', $envContent, $urlMatch);
+                    $headscaleUrl = trim($urlMatch[1] ?? $hsUrl);
+                }
+            } catch (\Throwable $e) {
+                throw new \RuntimeException('Headscale API key not found and could not be generated: ' . $e->getMessage());
+            }
+            if (!$apiKey) {
+                throw new \RuntimeException('Headscale API key not found. Check: docker compose logs headscale');
+            }
         }
 
         Setting::set('headscale.api_key', $apiKey, true);

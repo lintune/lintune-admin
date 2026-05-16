@@ -670,4 +670,19 @@ echo "  Default admin removed."
 echo "  Mailcow post-configuration complete."
 BASH);
     }
+
+    public function generateHeadscaleApiKey(string $headscaleUrl): string
+    {
+        $b64Url = base64_encode($headscaleUrl);
+
+        $this->execScript(<<<BASH
+cd /opt/lintune
+KEY=\$(docker compose exec -T headscale headscale apikeys create --expiration 9999d 2>&1 | grep -o 'hskey-api-[A-Za-z0-9_-]*' | tail -1)
+[ -n "\$KEY" ] || { echo "headscale apikeys create returned no key"; exit 1; }
+printf '\\nHEADSCALE_API_KEY=%s\\nHEADSCALE_URL=%s\\n' "\$KEY" "\$(printf '%s' '{$b64Url}' | base64 -d)" >> /opt/lintune/admin.env
+echo "CAPTURE:headscale_api_key:\$KEY"
+BASH);
+
+        return $this->getCaptured('headscale_api_key') ?? '';
+    }
 }
