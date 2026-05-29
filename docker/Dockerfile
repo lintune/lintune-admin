@@ -3,7 +3,8 @@ FROM php:8.4-fpm-alpine AS builder
 
 WORKDIR /var/www/html
 
-RUN apk add --no-cache git curl zip unzip \
+RUN apk add --no-cache git curl zip unzip libzip-dev icu-dev \
+    && docker-php-ext-install zip intl \
     && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
 COPY . /var/www/html

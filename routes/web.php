@@ -16,7 +16,7 @@ use App\Http\Middleware\WizardComplete;
 use Illuminate\Support\Facades\Route;
 
 
-Route::get('/', fn() => redirect()->route('super.login'));
+Route::get('/', fn() => session('super_access_token') ? redirect('/super') : redirect()->route('super.login'));
 
 // ── Pre-auth installer (unauthenticated, blocked once setup is complete) ──────
 Route::prefix('install')->name('install.')->group(function () {

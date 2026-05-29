@@ -10,7 +10,7 @@ class SuperAuthController extends Controller
     public function showLogin()
     {
         if (session('super_access_token')) {
-            return redirect()->route('super.realms');
+            return redirect('/super');
         }
 
         $verifier  = $this->generateVerifier();
@@ -73,7 +73,7 @@ class SuperAuthController extends Controller
             'super_token_expires_at' => now()->addSeconds($tokens['expires_in'])->timestamp,
         ]);
 
-        return redirect()->route('super.realms');
+        return redirect('/super');
     }
 
     public function logout()

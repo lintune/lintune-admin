@@ -2,10 +2,11 @@
     "$schema": "https://getcomposer.org/schema.json",
     "name": "lintune/admin",
     "type": "project",
-    "description": "Lintune Super Admin – realm provisioning.",
+    "description": "Lintune Super Admin \u2013 realm provisioning.",
     "license": "MIT",
     "require": {
         "php": "^8.3",
+        "filament/filament": "^4.0",
         "laravel/framework": "^13.0",
         "laravel/tinker": "^3.0",
         "phpseclib/phpseclib": "~3.0"
@@ -33,7 +34,8 @@
     "scripts": {
         "post-autoload-dump": [
             "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
-            "@php artisan package:discover --ansi"
+            "@php artisan package:discover --ansi",
+            "@php artisan filament:upgrade"
         ],
         "post-update-cmd": [
             "@php artisan vendor:publish --tag=laravel-assets --ansi --force"
