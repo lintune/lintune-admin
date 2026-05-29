@@ -389,7 +389,10 @@ class InstallController extends Controller
 
         $ssh->setOutputCallback($cb);
         $ssh->ensureDocker();
-        $ssh->installMailcow($params['mailcow_hostname'], $timezone, $retry);
+        // Single-server: Mailcow shares the host with Traefik → use alternate ports + skip LE.
+        // Multi-server: Mailcow owns its own host → standard ports + Let's Encrypt.
+        $sharedServer = $type === 'single';
+        $ssh->installMailcow($params['mailcow_hostname'], $timezone, $retry, $sharedServer);
         Setting::set('mailcow.url', "https://{$params['mailcow_hostname']}");
 
         $ssh->postConfigureMailcow($params['admin_username'], $params['admin_password']);

@@ -234,7 +234,7 @@ fi
 BASH);
     }
 
-    public function installMailcow(string $hostname, string $timezone = 'UTC', bool $clean = false): void
+    public function installMailcow(string $hostname, string $timezone = 'UTC', bool $clean = false, bool $sharedServer = false): void
     {
         $this->emit('→ Installing Mailcow...');
         if ($clean) {
@@ -273,7 +273,7 @@ echo "  Port 25 cleared."
 test -d /opt/mailcow-dockerized || git clone https://github.com/mailcow/mailcow-dockerized /opt/mailcow-dockerized
 cd /opt/mailcow-dockerized
 MAILCOW_HOSTNAME={$hostname} MAILCOW_TZ={$timezone} bash generate_config.sh
-# Inject API key and IP allowlist before containers start so the API is
+{$this->mailcowPortBlock($sharedServer)}{$this->mailcowTraefikOverrideBlock($hostname, $sharedServer)}# Inject API key and IP allowlist before containers start so the API is
 # immediately secured; 172.16.0.0/12 covers all default Docker bridge ranges.
 MC_API_KEY=\$(tr -dc 'A-Z0-9' < /dev/urandom | head -c 30 | sed 's/.\{6\}/&-/g' | sed 's/-\$//')
 printf '\nAPI_KEY=%s\nAPI_ALLOW_FROM=127.0.0.1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16\n' "\$MC_API_KEY" >> mailcow.conf
@@ -615,6 +615,46 @@ echo "CAPTURE:tailscale_ip:\$TAILSCALE_IP"
 BASH);
 
         return $this->getCaptured('tailscale_ip') ?? '';
+    }
+
+    private function mailcowPortBlock(bool $sharedServer): string
+    {
+        if (!$sharedServer) {
+            // Standalone server — Mailcow owns ports 80/443 and handles its own TLS.
+            return '';
+        }
+        // Shared server — Traefik already owns 80/443, so Mailcow must use alternate ports.
+        // Traefik discovers nginx-mailcow via Docker labels and proxies to its internal port 80.
+        return "printf '\\nHTTP_PORT=8080\\nHTTPS_PORT=8443\\nSKIP_LETS_ENCRYPT=y\\n' >> mailcow.conf\n";
+    }
+
+    private function mailcowTraefikOverrideBlock(string $hostname, bool $sharedServer): string
+    {
+        if (!$sharedServer) {
+            return '';
+        }
+        // Write a compose override that joins nginx-mailcow to the lintune_internal network
+        // and adds Traefik labels so Traefik discovers and routes to it automatically.
+        // Uses port 80 (internal Docker port) to avoid self-signed cert issues with 8443.
+        $yaml = implode("\n", [
+            'networks:',
+            '  lintune_internal:',
+            '    external: true',
+            '',
+            'services:',
+            '  nginx-mailcow:',
+            '    labels:',
+            '      - "traefik.enable=true"',
+            "      - \"traefik.http.routers.mailcow.rule=Host(\\`{$hostname}\\`)\"",
+            '      - "traefik.http.routers.mailcow.entrypoints=websecure"',
+            '      - "traefik.http.routers.mailcow.tls.certresolver=cloudflare"',
+            '      - "traefik.http.services.mailcow.loadbalancer.server.port=80"',
+            '    networks:',
+            '      - lintune_internal',
+            '',
+        ]);
+        $b64 = base64_encode($yaml);
+        return "printf '%s' '{$b64}' | base64 -d > /opt/mailcow-dockerized/docker-compose.override.yml\n";
     }
 
     public function postConfigureMailcow(string $adminUsername, string $adminPassword): void
