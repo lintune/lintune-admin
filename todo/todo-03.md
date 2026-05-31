@@ -1,7 +1,31 @@
 # TODO 03 — Playwright end-to-end test suite for lintune-admin
 
 ## Status
-Not started
+In progress — infrastructure done, tests need fixing
+
+## Next session: make the smoke tests pass
+
+Playwright is installed at `lintune-project/` (not inside lintune-admin — it's not a git repo there, that's fine).
+Tests are at `lintune-project/tests/e2e/`. Run from `lintune-project/`:
+
+```
+npx playwright test --headed        # watch it run
+npx playwright test --ui            # interactive explorer
+```
+
+**What's broken and needs fixing:**
+
+1. **Run the tests first** against `https://admin.dev.lintune.xyz` and read the actual failures — selectors or page text may not match what the views really render. Use `--headed` to see what's happening.
+
+2. **Installer tests** assume `SETUP_COMPLETE` is NOT set (pre-wizard state). If the dev container already has setup complete, `/install` redirects away. Either:
+   - Run installer tests against a fresh/reset container, or
+   - Skip them and focus on the post-setup auth + admin tests first
+
+3. **Auth tests** assume `SETUP_COMPLETE` IS set. Confirm the dev container is in post-setup state before running `auth.spec.ts`.
+
+4. **Fix any wrong selectors** — tests were written by reading the Blade templates, not by running against the live site. Text labels, field names, or URL patterns may be slightly off. The `--headed` run will make it obvious.
+
+5. **The configure form submit test** (`submitting form navigates to progress page`) will actually trigger a real install run against `__local__` — either mock it or point it at a throwaway target.
 
 ## Why
 

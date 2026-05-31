@@ -56,8 +56,9 @@ After blade/config/route changes: `docker exec lintune-lintune-admin-1 php artis
 
 | # | File | Summary |
 |---|---|---|
-| [01](todo/todo-01.md) | `InstallController` + `SshInstaller` | Headscale API key / URL not persisting correctly between install retries — 5 bugs documented, workaround applied |
-| [03](todo/todo-03.md) | `lintune-admin/tests/e2e/` | Playwright E2E test suite — installer wizard smoke tests + admin panel CRUD |
+| 01 | (spec lost — see CLAUDE.md) | Headscale API key / URL not persisting correctly between install retries — 5 bugs, workaround applied |
+| 03 | `lintune-project/tests/e2e/` | Playwright installed + 19 tests written, need a session to run --headed and fix broken selectors |
+| 04 | [`tugon/todo/todo-01-support-bridge.md`](../tugon/todo/todo-01-support-bridge.md) | Tugon support bridge — full spec, not started |
 
 ---
 
